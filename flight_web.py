@@ -96,11 +96,15 @@ if len(frames_data) > 0:
                 height:50px; display:flex; align-items:center; gap:15px;
                 padding:0 20px; background:#1a1c23; border-bottom:1px solid #333;
             }}
+            .extra-bar {{
+                height:42px; display:flex; align-items:center; gap:15px;
+                padding:0 20px; background:#14161b; border-bottom:1px solid #333;
+            }}
             button {{ padding:6px 16px; cursor:pointer; background:#2d6cdf; border:none; color:#fff; border-radius:4px; }}
             button:hover {{ background:#3b7eea; }}
             select, input[type=range] {{ padding:4px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; }}
             .info-panel {{
-                position:absolute; top:70px; right:20px; width:180px;
+                position:absolute; top:112px; right:20px; width:180px;
                 background:rgba(0,0,0,0.75); padding:15px; border-radius:8px;
                 font-size:14px; line-height:2; z-index:10;
             }}
@@ -108,11 +112,12 @@ if len(frames_data) > 0:
                 position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
                 color:#ff4444; font-size:16px; z-index:99;
             }}
-            #canvas-container {{ width:100%; height:650px; }}
+            #canvas-container {{ width:100%; height:608px; }}
         </style>
     </head>
     <body>
         <div id="error-tip">正在加载渲染引擎...</div>
+
         <div class="control-bar">
             <button id="playBtn">▶️ 播放</button>
             <label>倍速：
@@ -128,25 +133,38 @@ if len(frames_data) > 0:
             <input type="range" id="frameSlider" min="0" max="{total-1}" value="0" style="flex:1;">
             <span id="frameText">第 1 / {total} 帧</span>
         </div>
+
+        <div class="extra-bar">
+            <label>视角选择：
+                <select id="viewSelect">
+                    <option value="free">自由视角</option>
+                    <option value="top">俯视图</option>
+                    <option value="side">侧视图</option>
+                    <option value="front">前视图</option>
+                    <option value="follow">跟随飞机视角</option>
+                </select>
+            </label>
+        </div>
+
         <div id="canvas-container"></div>
+
         <div class="info-panel">
             <div>航向 Heading: <span id="hdgVal">0</span> °</div>
             <div>俯仰 Pitch: <span id="pitVal">0</span> °</div>
             <div>滚转 Roll: <span id="rolVal">0</span> °</div>
         </div>
 
-        <!-- 只加载Three.js主库，OrbitControls直接内嵌 -->
         <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
         <script>
-        // ========== 内嵌 OrbitControls 源码（适配r128） ==========
+        // ========== 内嵌 OrbitControls（降低拖拽灵敏度） ==========
         THREE.OrbitControls = function ( object, domElement ) {{
             this.object = object;
             this.domElement = domElement;
             this.target = new THREE.Vector3();
-            this.enableDamping = false;
+            this.enableDamping = true;
             this.dampingFactor = 0.05;
-            this.rotateSpeed = 1.0;
-            this.zoomSpeed = 1.0;
+            this.rotateSpeed = 0.35;   // 拖拽灵敏度降低
+            this.zoomSpeed = 0.6;      // 滚轮缩放灵敏度降低
             this.minDistance = 0;
             this.maxDistance = Infinity;
 
@@ -223,6 +241,10 @@ if len(frames_data) > 0:
         const frames = {data_json};
         const totalFrames = frames.length;
 
+        // 坐标系大小配置
+        const AIRCRAFT_AXIS_SIZE = 150;   // 飞机机体坐标轴大小
+        const HORIZON_AXIS_SIZE  = 180;   // 水平基准坐标轴大小
+
         // ENU 转 Three.js 坐标系：东→X  上→Y  北→-Z
         function enu2three(x, y, z) {{
             return new THREE.Vector3(x, z, -y);
@@ -270,13 +292,16 @@ if len(frames_data) > 0:
             const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
             aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({{ color: 0xff3333 }})));
         }});
-        aircraftGroup.add(new THREE.AxesHelper(100));
+
+        // 飞机机体坐标轴（加大）
+        const aircraftAxis = new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE);
+        aircraftGroup.add(aircraftAxis);
         scene.add(aircraftGroup);
 
-        // 水平基准坐标系
+        // 水平基准坐标轴（加大）
         const horizonGroup = new THREE.Group();
-        const hAxis = new THREE.AxesHelper(100);
-        hAxis.material.opacity = 0.4;
+        const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
+        hAxis.material.opacity = 0.45;
         hAxis.material.transparent = true;
         horizonGroup.add(hAxis);
         scene.add(horizonGroup);
@@ -286,14 +311,44 @@ if len(frames_data) > 0:
         const center = box.getCenter(new THREE.Vector3());
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z) || 1000;
-        camera.position.set(center.x + maxDim*1.5, center.y + maxDim*1.2, center.z + maxDim*1.5);
-        controls.target.copy(center);
-        controls.update();
+
+        let currentView = 'free';
+        let followAircraft = false;
+
+        function setCameraView(viewName) {{
+            currentView = viewName;
+            followAircraft = (viewName === 'follow');
+
+            switch (viewName) {{
+                case 'top':
+                    camera.position.set(center.x, maxDim * 2.5, center.z);
+                    camera.lookAt(center);
+                    controls.target.copy(center);
+                    break;
+                case 'side':
+                    camera.position.set(center.x + maxDim * 2, center.y, center.z);
+                    camera.lookAt(center);
+                    controls.target.copy(center);
+                    break;
+                case 'front':
+                    camera.position.set(center.x, center.y, center.z + maxDim * 2);
+                    camera.lookAt(center);
+                    controls.target.copy(center);
+                    break;
+                case 'free':
+                case 'follow':
+                    camera.position.set(center.x + maxDim * 1.5, center.y + maxDim * 1.2, center.z + maxDim * 1.5);
+                    controls.target.copy(center);
+                    break;
+            }
+            controls.update();
+        }}
 
         // 控件
         const playBtn = document.getElementById('playBtn');
         const speedSelect = document.getElementById('speedSelect');
         const frameSlider = document.getElementById('frameSlider');
+        const viewSelect = document.getElementById('viewSelect');
         const frameText = document.getElementById('frameText');
         const hdgVal = document.getElementById('hdgVal');
         const pitVal = document.getElementById('pitVal');
@@ -333,6 +388,14 @@ if len(frames_data) > 0:
             flownLine.geometry.dispose();
             flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
+            // 跟随飞机视角
+            if (followAircraft) {{
+                const offset = new THREE.Vector3(maxDim * 0.8, maxDim * 0.5, maxDim * 1.2);
+                offset.applyMatrix4(m);
+                camera.position.copy(pos).add(offset);
+                controls.target.copy(pos);
+            }}
+
             // 更新UI
             hdgVal.textContent = frame.heading.toFixed(1);
             pitVal.textContent = frame.pitch.toFixed(1);
@@ -360,6 +423,11 @@ if len(frames_data) > 0:
             currentFrame = parseInt(e.target.value);
             isPlaying = false;
             playBtn.textContent = '▶️ 播放';
+            updateFrame();
+        }});
+
+        viewSelect.addEventListener('change', e => {{
+            setCameraView(e.target.value);
             updateFrame();
         }});
 
@@ -397,6 +465,7 @@ if len(frames_data) > 0:
         }});
 
         // 初始化
+        setCameraView('free');
         updateFrame();
         animate(0);
         document.getElementById('error-tip').innerText = '';
