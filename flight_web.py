@@ -9,8 +9,46 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
-# ===================== 坐标转换 =====================
-# 经纬度转局部东北天坐标系
+# ===================== 标准航空姿态解算（和你桌面版完全一致） =====================
+# 机体坐标系：X机头向前，Y右翼，Z向下（右手系，航空标准）
+# ENU世界坐标系：X东，Y北，Z上
+def body_to_enu_rotation_matrix(heading_deg, pitch_deg, roll_deg):
+    h = np.radians(heading_deg)  # 航向：正北0°，顺时针
+    p = np.radians(pitch_deg)    # 俯仰：抬头为正
+    r = np.radians(roll_deg)     # 滚转：右翼下沉为正
+
+    # 航向旋转（绕Z轴，ENU向上）
+    Rh = np.array([
+        [np.cos(h), -np.sin(h), 0],
+        [np.sin(h), np.cos(h), 0],
+        [0, 0, 1]
+    ])
+    # 俯仰旋转（绕Y轴，右翼方向）
+    Rp = np.array([
+        [np.cos(p), 0, np.sin(p)],
+        [0, 1, 0],
+        [-np.sin(p), 0, np.cos(p)]
+    ])
+    # 滚转旋转（绕X轴，机头方向）
+    Rr = np.array([
+        [1, 0, 0],
+        [0, np.cos(r), -np.sin(r)],
+        [0, np.sin(r), np.cos(r)]
+    ])
+    # 航空标准顺序：航向 → 俯仰 → 滚转
+    return Rh @ Rp @ Rr
+
+# ENU 转 Three.js 坐标系
+# ENU: X东 Y北 Z上  →  Three.js: X东 Y上 Z=-北
+def enu_to_three_matrix(R_enu):
+    T = np.array([
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, -1, 0]
+    ])
+    return T @ R_enu @ T.T
+
+# 经纬度转局部东北天
 def ll2local_enu(lat0, lon0, lat, lon, alt):
     R = 6371000
     dlat = np.radians(lat - lat0)
@@ -43,13 +81,16 @@ if load_btn:
         
         for _, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
+            R_enu = body_to_enu_rotation_matrix(row["heading"], row["pitch"], row["roll"])
+            R_three = enu_to_three_matrix(R_enu)
             frames_data.append({
                 "x": float(e),
                 "y": float(n),
                 "z": float(u),
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
-                "roll": float(row["roll"])
+                "roll": float(row["roll"]),
+                "R": R_three.flatten().tolist()
             })
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
     except Exception as e:
@@ -217,12 +258,11 @@ if len(frames_data) > 0:
     const frames = __DATA_JSON__;
     const totalFrames = frames.length;
 
-    // 尺寸配置
     const AIRCRAFT_SIZE = 150;
     const AIRCRAFT_AXIS_SIZE = 220;
     const HORIZON_AXIS_SIZE  = 250;
 
-    // ENU 转 Three.js 坐标系：东→X  上→Y  北→-Z
+    // ENU 转 Three.js 坐标点
     function enu2three(x, y, z) {
         return new THREE.Vector3(x, z, -y);
     }
@@ -256,22 +296,21 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-    // ========== 飞机模型（机头朝 -Z 正北方向，右翼朝 +X 正东） ==========
+    // ========== 飞机模型（严格对齐机体坐标系：X机头向前，Y右翼，Z向下） ==========
     const aircraftGroup = new THREE.Group();
-    // 机体顶点：-Z机头，+Z机尾，+X右翼，+Y向上
     const bodyPts = [
-        new THREE.Vector3(0, 0, -AIRCRAFT_SIZE),          // 机头
-        new THREE.Vector3(0, 0, AIRCRAFT_SIZE * 0.7),     // 机尾
-        new THREE.Vector3(AIRCRAFT_SIZE * 0.85, 0, 0),    // 右翼尖
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.85, 0, 0),   // 左翼尖
-        new THREE.Vector3(0, AIRCRAFT_SIZE * 0.35, AIRCRAFT_SIZE * 0.4) // 垂尾上
+        new THREE.Vector3(AIRCRAFT_SIZE, 0, 0),              // 机头（X正方向）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.7, 0, 0),       // 机尾
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, AIRCRAFT_SIZE * 0.85, 0),  // 右翼尖（Y正）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, -AIRCRAFT_SIZE * 0.85, 0), // 左翼尖（Y负）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.4, 0, -AIRCRAFT_SIZE * 0.35)   // 垂尾上（Z负，因为机体Z向下）
     ];
     // 机身连线
     [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {
         const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
         aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xff3333 })));
     });
-    // 机头黄色标识球
+    // 机头黄色标识
     const noseGeo = new THREE.SphereGeometry(AIRCRAFT_SIZE * 0.12, 8, 8);
     const noseMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
     const noseBall = new THREE.Mesh(noseGeo, noseMat);
@@ -282,7 +321,7 @@ if len(frames_data) > 0:
     aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
     scene.add(aircraftGroup);
 
-    // 水平基准坐标轴（永远水平，只转航向）
+    // 水平基准坐标轴
     const horizonGroup = new THREE.Group();
     const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
     hAxis.material.opacity = 0.45;
@@ -345,7 +384,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-    // ========== 更新单帧姿态（核心修正：欧拉角严格匹配航空定义） ==========
+    // ========== 更新单帧（直接用Python算好的矩阵，姿态100%一致） ==========
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -353,16 +392,18 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 欧拉角旋转顺序：航向(Y) → 俯仰(X) → 滚转(Z)，标准航空姿态顺序
-        aircraftGroup.rotation.order = 'YXZ';
-        // 航向：绕Y轴顺时针，直接对应
-        aircraftGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
-        // 俯仰：绕X轴，抬头为正
-        aircraftGroup.rotation.x = THREE.MathUtils.degToRad(frame.pitch);
-        // 滚转：绕Z轴，右滚为正，取反匹配方向
-        aircraftGroup.rotation.z = -THREE.MathUtils.degToRad(frame.roll);
+        // 直接应用Python传过来的旋转矩阵，行优先填入
+        const R = frame.R;
+        const m = new THREE.Matrix4();
+        m.set(
+            R[0], R[1], R[2], 0,
+            R[3], R[4], R[5], 0,
+            R[6], R[7], R[8], 0,
+            0, 0, 0, 1
+        );
+        aircraftGroup.setRotationFromMatrix(m);
 
-        // 水平基准：只转航向，永远水平
+        // 水平基准：只绕Y轴转航向，永远水平
         horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
 
         // 更新已飞轨迹
@@ -370,7 +411,7 @@ if len(frames_data) > 0:
         flownLine.geometry.dispose();
         flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
-        // 跟随视角：只更新目标点，用户可自由缩放旋转
+        // 跟随视角：更新目标点
         if (followAircraft) {
             controls.target.copy(pos);
         }
