@@ -9,15 +9,15 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
-# ===================== 标准航空姿态解算（和你桌面版完全一致） =====================
-# 机体坐标系：X机头向前，Y右翼，Z向下（右手系，航空标准）
+# ===================== 标准航空姿态解算（和桌面版完全一致） =====================
+# 机体坐标系：X机头向前，Y右翼向右，Z向下（航空标准右手系）
 # ENU世界坐标系：X东，Y北，Z上
 def body_to_enu_rotation_matrix(heading_deg, pitch_deg, roll_deg):
     h = np.radians(heading_deg)  # 航向：正北0°，顺时针
     p = np.radians(pitch_deg)    # 俯仰：抬头为正
     r = np.radians(roll_deg)     # 滚转：右翼下沉为正
 
-    # 航向旋转（绕Z轴，ENU向上）
+    # 航向旋转（绕Z轴，向上为正）
     Rh = np.array([
         [np.cos(h), -np.sin(h), 0],
         [np.sin(h), np.cos(h), 0],
@@ -38,15 +38,13 @@ def body_to_enu_rotation_matrix(heading_deg, pitch_deg, roll_deg):
     # 航空标准顺序：航向 → 俯仰 → 滚转
     return Rh @ Rp @ Rr
 
-# ENU 转 Three.js 坐标系
+# ENU → Three.js 坐标系变换矩阵
 # ENU: X东 Y北 Z上  →  Three.js: X东 Y上 Z=-北
-def enu_to_three_matrix(R_enu):
-    T = np.array([
-        [1, 0, 0],
-        [0, 0, 1],
-        [0, -1, 0]
-    ])
-    return T @ R_enu @ T.T
+ENU_TO_THREE_T = np.array([
+    [1, 0, 0],
+    [0, 0, 1],
+    [0, -1, 0]
+])
 
 # 经纬度转局部东北天
 def ll2local_enu(lat0, lon0, lat, lon, alt):
@@ -82,7 +80,8 @@ if load_btn:
         for _, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
             R_enu = body_to_enu_rotation_matrix(row["heading"], row["pitch"], row["roll"])
-            R_three = enu_to_three_matrix(R_enu)
+            # 修正：直接左乘变换矩阵，不是相似变换
+            R_three = ENU_TO_THREE_T @ R_enu
             frames_data.append({
                 "x": float(e),
                 "y": float(n),
@@ -280,7 +279,7 @@ if len(frames_data) > 0:
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    // 地面网格
+    // 地面网格（XZ水平面，Y向上）
     const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
     scene.add(gridHelper);
 
@@ -296,14 +295,15 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-    // ========== 飞机模型（严格对齐机体坐标系：X机头向前，Y右翼，Z向下） ==========
+    // ========== 修正飞机模型：严格匹配机体坐标系 X前 Y右 Z下 ==========
     const aircraftGroup = new THREE.Group();
+    // 机体顶点：X机头向前，Y右翼向右，Z向下
     const bodyPts = [
-        new THREE.Vector3(AIRCRAFT_SIZE, 0, 0),              // 机头（X正方向）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.7, 0, 0),       // 机尾
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, AIRCRAFT_SIZE * 0.85, 0),  // 右翼尖（Y正）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, -AIRCRAFT_SIZE * 0.85, 0), // 左翼尖（Y负）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.4, 0, -AIRCRAFT_SIZE * 0.35)   // 垂尾上（Z负，因为机体Z向下）
+        new THREE.Vector3(AIRCRAFT_SIZE, 0, 0),              // 机头（X+）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.7, 0, 0),       // 机尾（X-）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, 0, AIRCRAFT_SIZE * 0.85),  // 右翼尖（Z+）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, 0, -AIRCRAFT_SIZE * 0.85), // 左翼尖（Z-）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.4, -AIRCRAFT_SIZE * 0.35, 0)   // 垂尾上（Y-，因为Y向上，机体Z向下对应-Y）
     ];
     // 机身连线
     [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {
@@ -384,7 +384,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-    // ========== 更新单帧（直接用Python算好的矩阵，姿态100%一致） ==========
+    // ========== 更新单帧姿态 ==========
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -392,7 +392,7 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 直接应用Python传过来的旋转矩阵，行优先填入
+        // 直接应用Python传过来的旋转矩阵（行优先填入）
         const R = frame.R;
         const m = new THREE.Matrix4();
         m.set(
