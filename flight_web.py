@@ -9,39 +9,8 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
-# ===================== 标准航空姿态解算 =====================
-# 机体坐标系：X机头向前，Y右翼向右，Z向下（航空标准右手系）
-# ENU世界坐标系：X东，Y北，Z上
-def body_to_enu_rotation_matrix(heading_deg, pitch_deg, roll_deg):
-    h = np.radians(heading_deg)
-    p = np.radians(pitch_deg)
-    r = np.radians(roll_deg)
-
-    Rh = np.array([
-        [np.cos(h), -np.sin(h), 0],
-        [np.sin(h), np.cos(h), 0],
-        [0, 0, 1]
-    ])
-    Rp = np.array([
-        [np.cos(p), 0, np.sin(p)],
-        [0, 1, 0],
-        [-np.sin(p), 0, np.cos(p)]
-    ])
-    Rr = np.array([
-        [1, 0, 0],
-        [0, np.cos(r), -np.sin(r)],
-        [0, np.sin(r), np.cos(r)]
-    ])
-    return Rh @ Rp @ Rr
-
-# ENU → Three.js 坐标系变换矩阵
-ENU_TO_THREE_T = np.array([
-    [1, 0, 0],
-    [0, 0, 1],
-    [0, -1, 0]
-])
-
-# 经纬度转局部东北天
+# ===================== 坐标转换 =====================
+# 经纬度转局部东北天坐标系
 def ll2local_enu(lat0, lon0, lat, lon, alt):
     R = 6371000
     dlat = np.radians(lat - lat0)
@@ -74,16 +43,13 @@ if load_btn:
         
         for _, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
-            R_enu = body_to_enu_rotation_matrix(row["heading"], row["pitch"], row["roll"])
-            R_three = ENU_TO_THREE_T @ R_enu @ ENU_TO_THREE_T.T
             frames_data.append({
                 "x": float(e),
                 "y": float(n),
                 "z": float(u),
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
-                "roll": float(row["roll"]),
-                "R": R_three.flatten().tolist()
+                "roll": float(row["roll"])
             })
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
     except Exception as e:
@@ -289,9 +255,9 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-    // ========== 3D飞机模型（机头沿X轴正方向） ==========
+    // ========== 3D飞机模型（机头沿X轴正方向，机翼沿Z轴展开） ==========
     const aircraftGroup = new THREE.Group();
-    const s = AIRCRAFT_SIZE / 150; // 尺寸缩放系数
+    const s = AIRCRAFT_SIZE / 150;
 
     // 机身
     const bodyGeo = new THREE.CylinderGeometry(3*s, 4.5*s, 100*s, 10);
@@ -309,7 +275,7 @@ if len(frames_data) > 0:
     nose.position.x = 80 * s;
     aircraftGroup.add(nose);
 
-    // 主翼
+    // 主翼（沿Z轴左右展开）
     const wingGeo = new THREE.BoxGeometry(15*s, 2*s, 120*s);
     const wingMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const wing = new THREE.Mesh(wingGeo, wingMat);
@@ -330,13 +296,6 @@ if len(frames_data) > 0:
     tailGroup.add(vTail);
     tailGroup.position.x = -45 * s;
     aircraftGroup.add(tailGroup);
-
-    // 机头黄色标识球（一眼分辨前后）
-    const noseBallGeo = new THREE.SphereGeometry(8*s, 10, 10);
-    const noseBallMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-    const noseBall = new THREE.Mesh(noseBallGeo, noseBallMat);
-    noseBall.position.x = 100 * s;
-    aircraftGroup.add(noseBall);
 
     // 机体坐标轴
     aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
@@ -405,7 +364,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-    // ========== 更新单帧姿态 ==========
+    // ========== 核心修复：姿态轴+航向对齐 ==========
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -413,19 +372,18 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 列优先填入旋转矩阵，和Python计算结果完全一致
-        const R = frame.R;
-        const m = new THREE.Matrix4();
-        m.set(
-            R[0], R[3], R[6], 0,
-            R[1], R[4], R[7], 0,
-            R[2], R[5], R[8], 0,
-            0, 0, 0, 1
-        );
-        aircraftGroup.setRotationFromMatrix(m);
+        // 航空标准旋转顺序：偏航→俯仰→滚转
+        aircraftGroup.rotation.order = 'YZX';
 
-        // 水平基准只转航向
-        horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
+        // 航向：修正90度偏移，机头对齐正北基准
+        aircraftGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading - 90);
+        // 俯仰：绕Z轴（机翼横轴），抬头为正
+        aircraftGroup.rotation.z = THREE.MathUtils.degToRad(frame.pitch);
+        // 滚转：绕X轴（机头纵轴），右翼下沉为正
+        aircraftGroup.rotation.x = THREE.MathUtils.degToRad(frame.roll);
+
+        // 水平基准：只转航向，永远水平
+        horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading - 90);
 
         // 更新已飞轨迹
         const flownPts = allPoints.slice(0, currentFrame + 1);
