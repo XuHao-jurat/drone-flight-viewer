@@ -9,7 +9,7 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
-# ===================== 姿态旋转矩阵（和你之前的逻辑100%一致） =====================
+# ===================== 姿态旋转矩阵 =====================
 def euler_rotation_matrix(heading_deg, pitch_deg, roll_deg):
     h = np.radians(heading_deg)
     p = np.radians(pitch_deg)
@@ -64,7 +64,6 @@ if load_btn:
         lat0 = df["latitude"].iloc[0]
         lon0 = df["longitude"].iloc[0]
         
-        # 一次性预处理所有帧
         for _, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
             R = euler_rotation_matrix(row["heading"], row["pitch"], row["roll"])
@@ -75,18 +74,16 @@ if load_btn:
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
                 "roll": float(row["roll"]),
-                "R": R.flatten().tolist()  # 旋转矩阵展平，保证姿态100%一致
+                "R": R.flatten().tolist()
             })
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
     except Exception as e:
         st.error(f"数据解析失败：{str(e)}")
 
-# ===================== 渲染3D动画组件（零闪烁核心） =====================
+# ===================== 渲染3D动画组件 =====================
 if len(frames_data) > 0:
-    # 把数据转成JSON字符串，注入到JS里
     data_json = json.dumps(frames_data)
     
-    # HTML + JS 模板
     html_template = f"""
     <!DOCTYPE html>
     <html lang="zh-CN">
@@ -96,7 +93,7 @@ if len(frames_data) > 0:
         <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/controls/OrbitControls.js"></script>
         <style>
             * {{ margin:0; padding:0; box-sizing:border-box; font-family:Arial, sans-serif; }}
-            body {{ background:#0e1117; color:#fff; }}
+            html, body {{ width:100%; height:100%; overflow:hidden; background:#0e1117; color:#fff; }}
             .control-bar {{
                 height:50px; display:flex; align-items:center; gap:15px;
                 padding:0 20px; background:#1a1c23; border-bottom:1px solid #333;
@@ -107,9 +104,9 @@ if len(frames_data) > 0:
             .info-panel {{
                 position:absolute; top:70px; right:20px; width:180px;
                 background:rgba(0,0,0,0.7); padding:15px; border-radius:8px;
-                font-size:14px; line-height:2;
+                font-size:14px; line-height:2; z-index:10;
             }}
-            #canvas-container {{ width:100%; height:calc(100vh - 50px); }}
+            #canvas-container {{ width:100%; height:calc(100% - 50px); }}
         </style>
     </head>
     <body>
@@ -138,17 +135,21 @@ if len(frames_data) > 0:
         </div>
 
         <script>
-            // 接收Python传过来的数据
             const frames = {data_json};
             const totalFrames = frames.length;
+
+            // ========== 坐标系转换：ENU → Three.js ==========
+            // ENU: X东 Y北 Z上  →  Three.js: X右 Y上 Z向屏幕内
+            function enu2three(x, y, z) {{
+                return new THREE.Vector3(x, z, -y);
+            }}
 
             // ========== 初始化Three.js场景 ==========
             const container = document.getElementById('canvas-container');
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x0e1117);
 
-            const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 100000);
-            camera.position.set(2000, -2000, 1500);
+            const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 1000000);
 
             const renderer = new THREE.WebGLRenderer({{ antialias:true }});
             renderer.setSize(container.clientWidth, container.clientHeight);
@@ -157,35 +158,32 @@ if len(frames_data) > 0:
             const controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
 
-            // 网格辅助
+            // 地面网格（XY平面 → Three.js XZ平面）
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
-            gridHelper.rotation.x = Math.PI / 2; // 网格放在XY水平面（东北天）
             scene.add(gridHelper);
 
             // ========== 绘制完整航线 ==========
-            const allPoints = frames.map(f => new THREE.Vector3(f.x, f.y, f.z));
+            const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
             const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
             const fullLineMat = new THREE.LineBasicMaterial({{ color: 0x888888 }});
             const fullLine = new THREE.Line(fullLineGeo, fullLineMat);
             scene.add(fullLine);
 
-            // 已飞轨迹（动态更新）
+            // 已飞轨迹
             const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
-            const flownLineMat = new THREE.LineBasicMaterial({{ color: 0xff4444, linewidth:3 }});
+            const flownLineMat = new THREE.LineBasicMaterial({{ color: 0xff4444 }});
             const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
             scene.add(flownLine);
 
             // ========== 创建飞机模型 ==========
             const aircraftGroup = new THREE.Group();
-            // 机体顶点（机头向前X轴）
             const bodyPoints = [
-                new THREE.Vector3(80, 0, 0),    // 机头
+                new THREE.Vector3(80, 0, 0),    // 机头（X向前）
                 new THREE.Vector3(-50, 0, 0),   // 机尾
-                new THREE.Vector3(-10, 60, 0),  // 右翼
-                new THREE.Vector3(-10, -60, 0), // 左翼
-                new THREE.Vector3(-35, 0, 25)   // 垂尾
+                new THREE.Vector3(-10, 0, 60),  // 右翼（Z向右翼，对应机体Y轴）
+                new THREE.Vector3(-10, 0, -60), // 左翼
+                new THREE.Vector3(-35, 25, 0)   // 垂尾（Y向上，对应机体Z轴）
             ];
-            // 连线
             const lines = [[0,1],[1,2],[1,3],[1,4]];
             lines.forEach(([a,b]) => {{
                 const geo = new THREE.BufferGeometry().setFromPoints([bodyPoints[a], bodyPoints[b]]);
@@ -194,11 +192,11 @@ if len(frames_data) > 0:
             }});
             scene.add(aircraftGroup);
 
-            // 机体坐标轴（红X绿Y蓝Z）
+            // 机体坐标轴
             const axisHelper = new THREE.AxesHelper(100);
             aircraftGroup.add(axisHelper);
 
-            // 水平基准坐标轴（灰色虚线）
+            // 水平基准坐标系
             const horizonGroup = new THREE.Group();
             const horizonAxis = new THREE.AxesHelper(100);
             horizonAxis.material.transparent = true;
@@ -206,12 +204,24 @@ if len(frames_data) > 0:
             horizonGroup.add(horizonAxis);
             scene.add(horizonGroup);
 
+            // ========== 自动适配相机位置 ==========
+            const box = new THREE.Box3().setFromPoints(allPoints);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            camera.position.copy(center);
+            camera.position.x += maxDim * 1.5;
+            camera.position.y += maxDim * 1.2;
+            camera.position.z += maxDim * 1.5;
+            controls.target.copy(center);
+            controls.update();
+
             // ========== 播放控制 ==========
             let currentFrame = 0;
             let isPlaying = false;
             let speed = 1;
             let lastTime = 0;
-            const frameInterval = 100; // 每帧间隔ms，1倍速
+            const frameInterval = 100;
 
             const playBtn = document.getElementById('playBtn');
             const speedSelect = document.getElementById('speedSelect');
@@ -235,30 +245,35 @@ if len(frames_data) > 0:
                 updateFrame();
             }});
 
-            // 更新单帧画面
+            // 更新单帧
             function updateFrame() {{
                 const frame = frames[currentFrame];
+                const pos = enu2three(frame.x, frame.y, frame.z);
                 
-                // 更新飞机位置
-                aircraftGroup.position.set(frame.x, frame.y, frame.z);
-                horizonGroup.position.set(frame.x, frame.y, frame.z);
+                aircraftGroup.position.copy(pos);
+                horizonGroup.position.copy(pos);
 
-                // 应用旋转矩阵（和Python计算结果完全一致）
+                // 旋转矩阵：行优先填入Three.js矩阵
+                const R = frame.R;
                 const m = new THREE.Matrix4();
                 m.set(
-                    frame.R[0], frame.R[3], frame.R[6], 0,
-                    frame.R[1], frame.R[4], frame.R[7], 0,
-                    frame.R[2], frame.R[5], frame.R[8], 0,
+                    R[0], R[1], R[2], 0,
+                    R[3], R[4], R[5], 0,
+                    R[6], R[7], R[8], 0,
                     0, 0, 0, 1
                 );
                 aircraftGroup.setRotationFromMatrix(m);
+
+                // 水平基准：只转航向
+                const hRad = THREE.MathUtils.degToRad(frame.heading);
+                horizonGroup.rotation.y = hRad;
 
                 // 更新已飞轨迹
                 const flownPoints = allPoints.slice(0, currentFrame + 1);
                 flownLine.geometry.dispose();
                 flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPoints);
 
-                // 更新UI数值
+                // 更新UI
                 hdgVal.textContent = frame.heading.toFixed(1);
                 pitVal.textContent = frame.pitch.toFixed(1);
                 rolVal.textContent = frame.roll.toFixed(1);
@@ -266,7 +281,7 @@ if len(frames_data) > 0:
                 frameSlider.value = currentFrame;
             }}
 
-            // 动画循环（浏览器原生，零闪烁）
+            // 动画循环
             function animate(time) {{
                 requestAnimationFrame(animate);
                 
@@ -288,14 +303,14 @@ if len(frames_data) > 0:
                 renderer.render(scene, camera);
             }}
 
-            // 窗口大小自适应
+            // 窗口自适应
             window.addEventListener('resize', () => {{
                 camera.aspect = container.clientWidth / container.clientHeight;
                 camera.updateProjectionMatrix();
                 renderer.setSize(container.clientWidth, container.clientHeight);
             }});
 
-            // 初始化第一帧
+            // 初始化
             updateFrame();
             animate(0);
         </script>
@@ -303,8 +318,7 @@ if len(frames_data) > 0:
     </html>
     """
 
-    # 渲染组件，高度设为800，适配页面
-    components.html(html_template, height=800, scrolling=False)
+    components.html(html_template, height=750, scrolling=False)
 
 else:
     st.info("👉 请在左侧侧边栏输入CSV数据，点击【加载数据】开始可视化")
