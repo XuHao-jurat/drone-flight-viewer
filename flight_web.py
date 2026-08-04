@@ -10,7 +10,6 @@ st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", l
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
 # ===================== 坐标转换 =====================
-# 经纬度转局部东北天坐标系
 def ll2local_enu(lat0, lon0, lat, lon, alt):
     R = 6371000
     dlat = np.radians(lat - lat0)
@@ -37,10 +36,10 @@ if load_btn:
             df = pd.read_csv(StringIO(csv_text))
         else:
             df = pd.read_csv(uploaded_file)
-        
+
         lat0 = df["latitude"].iloc[0]
         lon0 = df["longitude"].iloc[0]
-        
+
         for _, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
             frames_data.append({
@@ -51,7 +50,9 @@ if load_btn:
                 "pitch": float(row["pitch"]),
                 "roll": float(row["roll"])
             })
+
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
+
     except Exception as e:
         st.error(f"数据解析失败：{str(e)}")
 
@@ -59,7 +60,7 @@ if load_btn:
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
-    
+
     html_template = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -255,53 +256,56 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-    // ========== 3D飞机模型（机头沿X轴正方向，机翼沿Z轴展开） ==========
+    // ========== 飞机模型：机头沿 -Z，右翼沿 +X，Y向上 ==========
     const aircraftGroup = new THREE.Group();
     const s = AIRCRAFT_SIZE / 150;
 
-    // 机身
+    // 机身：沿 Z 轴方向，机头在 -Z
     const bodyGeo = new THREE.CylinderGeometry(3*s, 4.5*s, 100*s, 10);
     const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.rotation.z = Math.PI / 2;
-    body.position.x = 10 * s;
+    body.rotation.x = Math.PI / 2;
+    body.position.z = -10 * s;
     aircraftGroup.add(body);
 
-    // 机头红色尖头
+    // 机头红色尖头：沿 -Z
     const noseGeo = new THREE.ConeGeometry(3*s, 40*s, 10);
     const noseMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
     const nose = new THREE.Mesh(noseGeo, noseMat);
-    nose.rotation.z = Math.PI / 2;
-    nose.position.x = 80 * s;
+    nose.rotation.x = Math.PI / 2;
+    nose.position.z = -80 * s;
     aircraftGroup.add(nose);
 
-    // 主翼（沿Z轴左右展开）
-    const wingGeo = new THREE.BoxGeometry(15*s, 2*s, 120*s);
+    // 主翼：沿 X 轴左右展开
+    const wingGeo = new THREE.BoxGeometry(120*s, 2*s, 15*s);
     const wingMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const wing = new THREE.Mesh(wingGeo, wingMat);
-    wing.position.x = -10 * s;
+    wing.position.z = 10 * s;
     aircraftGroup.add(wing);
 
     // 尾翼组
     const tailGroup = new THREE.Group();
+
     // 水平尾翼
-    const hTailGeo = new THREE.BoxGeometry(10*s, 1.5*s, 50*s);
+    const hTailGeo = new THREE.BoxGeometry(50*s, 1.5*s, 10*s);
     const hTail = new THREE.Mesh(hTailGeo, wingMat);
     tailGroup.add(hTail);
+
     // 垂直尾翼
-    const vTailGeo = new THREE.BoxGeometry(10*s, 30*s, 2*s);
+    const vTailGeo = new THREE.BoxGeometry(2*s, 30*s, 10*s);
     const vTailMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
     const vTail = new THREE.Mesh(vTailGeo, vTailMat);
     vTail.position.y = 15 * s;
     tailGroup.add(vTail);
-    tailGroup.position.x = -45 * s;
+
+    tailGroup.position.z = 45 * s;
     aircraftGroup.add(tailGroup);
 
     // 机体坐标轴
     aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
     scene.add(aircraftGroup);
 
-    // 水平基准坐标轴（永远水平）
+    // 水平基准坐标轴
     const horizonGroup = new THREE.Group();
     const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
     hAxis.material.opacity = 0.45;
@@ -315,7 +319,7 @@ if len(frames_data) > 0:
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1000;
 
-    let currentView = 'free';
+    let currentView = 'a94b9089c494f72fa305f6706730692c';
     let followAircraft = false;
 
     function setCameraView(viewName) {
@@ -348,7 +352,7 @@ if len(frames_data) > 0:
     }
 
     // 控件
-    const playBtn = document.getElementById('playBtn');
+    const playBtn = new THREE.MeshBasicMaterial({ color: 0xff0000 });
     const speedSelect = document.getElementById('speedSelect');
     const frameSlider = document.getElementById('frameSlider');
     const viewSelect = document.getElementById('viewSelect');
@@ -364,7 +368,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-    // ========== 核心修复：姿态轴+航向对齐 ==========
+    // ========== 姿态控制：航空标准 ==========
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -372,18 +376,24 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 航空标准旋转顺序：偏航→俯仰→滚转
-        aircraftGroup.rotation.order = 'YZX';
+        const h = THREE.MathUtils.degToRad(frame.heading);
+        const p = THREE.MathUtils.degToRad(frame.pitch);
+        const r = THREE.MathUtils.degToRad(frame.roll);
 
-        // 航向：修正90度偏移，机头对齐正北基准
-        aircraftGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading - 90);
-        // 俯仰：绕Z轴（机翼横轴），抬头为正
-        aircraftGroup.rotation.z = THREE.MathUtils.degToRad(frame.pitch);
-        // 滚转：绕X轴（机头纵轴），右翼下沉为正
-        aircraftGroup.rotation.x = THREE.MathUtils.degToRad(frame.roll);
+        // 航空标准旋转顺序：航向 → 俯仰 → 滚转
+        aircraftGroup.rotation.order = 'YXZ';
 
-        // 水平基准：只转航向，永远水平
-        horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading - 90);
+        // 航向：绕 Y 轴，0° 正北，顺时针增加
+        aircraftGroup.rotation.y = h;
+
+        // 俯仰：绕 X 轴，抬头为正
+        aircraftGroup.rotation.x = p;
+
+        // 滚转：绕 Z 轴，右翼下沉为正
+        aircraftGroup.rotation.z = -r;
+
+        // 水平基准只转航向
+        horizonGroup.rotation.y = h;
 
         // 更新已飞轨迹
         const flownPts = allPoints.slice(0, currentFrame + 1);
@@ -472,7 +482,7 @@ if len(frames_data) > 0:
 </body>
 </html>
     """
-    
+
     # 替换占位符注入数据
     html_template = html_template.replace("__DATA_JSON__", data_json)
     html_template = html_template.replace("__TOTAL__", str(total - 1))
