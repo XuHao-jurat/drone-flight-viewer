@@ -21,9 +21,9 @@ def euler_rotation_matrix(heading_deg, pitch_deg, roll_deg):
         [0, 0, 1]
     ])
     Rp = np.array([
-        [np.cos(p), 0, np.sin(p)],
+        [np.cos(pitch), 0, np.sin(pitch)],
         [0, 1, 0],
-        [-np.sin(p), 0, np.cos(p)]
+        [-np.sin(pitch), 0, np.cos(pitch)]
     ])
     Rr = np.array([
         [1, 0, 0],
@@ -89,8 +89,9 @@ if len(frames_data) > 0:
     <html lang="zh-CN">
     <head>
         <meta charset="UTF-8">
-        <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/controls/OrbitControls.js"></script>
+        <!-- 修复：使用兼容全局挂载的 Three.js + OrbitControls -->
+        <script src="https://cdn.jsdelivr.net/npm/three@0.148.0/build/three.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.148.0/examples/js/controls/OrbitControls.js"></script>
         <style>
             * {{ margin:0; padding:0; box-sizing:border-box; font-family:Arial, sans-serif; }}
             html, body {{ width:100%; height:100%; overflow:hidden; background:#0e1117; color:#fff; }}
@@ -217,7 +218,7 @@ if len(frames_data) > 0:
             let currentFrame = 0;
             let isPlaying = false;
             let speed = 1;
-            let lastTime = null; // 修复首帧跳变bug
+            let lastTime = null;
             const frameInterval = 100;
 
             // ========== 更新单帧 ==========
@@ -258,10 +259,10 @@ if len(frames_data) > 0:
             // ========== 事件绑定 ==========
             playBtn.addEventListener('click', function() {{
                 if (currentFrame >= totalFrames - 1) {{
-                    currentFrame = 0; // 播完了就从头开始
+                    currentFrame = 0;
                 }}
                 isPlaying = !isPlaying;
-                lastTime = null; // 重置时间基准
+                lastTime = null;
                 playBtn.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
             }});
 
@@ -283,7 +284,7 @@ if len(frames_data) > 0:
 
                 if (isPlaying) {{
                     if (lastTime === null) {{
-                        lastTime = time; // 第一帧只记录时间，不跳帧
+                        lastTime = time;
                     }} else {{
                         const delta = time - lastTime;
                         if (delta > frameInterval / speed) {{
@@ -310,7 +311,7 @@ if len(frames_data) > 0:
                 renderer.setSize(container.clientWidth, container.clientHeight);
             }});
 
-            // 初始化第一帧并启动循环
+            // 初始化
             updateFrame();
             animate(0);
         }};
