@@ -112,7 +112,7 @@ if len(frames_data) > 0:
         </style>
     </head>
     <body>
-        <div id="error-tip"></div>
+        <div id="error-tip">正在加载渲染引擎...</div>
         <div class="control-bar">
             <button id="playBtn">▶️ 播放</button>
             <label>倍速：
@@ -135,12 +135,87 @@ if len(frames_data) > 0:
             <div>滚转 Roll: <span id="rolVal">0</span> °</div>
         </div>
 
-        <!-- 换用cdnjs稳定CDN，确保加载成功 -->
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/controls/OrbitControls.js"></script>
-
+        <!-- 只加载Three.js主库，OrbitControls直接内嵌 -->
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
         <script>
-        // 全局错误捕获，有问题显示在页面上
+        // ========== 内嵌 OrbitControls 源码（适配r128） ==========
+        THREE.OrbitControls = function ( object, domElement ) {{
+            this.object = object;
+            this.domElement = domElement;
+            this.target = new THREE.Vector3();
+            this.enableDamping = false;
+            this.dampingFactor = 0.05;
+            this.rotateSpeed = 1.0;
+            this.zoomSpeed = 1.0;
+            this.minDistance = 0;
+            this.maxDistance = Infinity;
+
+            var scope = this;
+            var spherical = new THREE.Spherical();
+            var sphericalDelta = new THREE.Spherical();
+            var scale = 1;
+            var isDragging = false;
+            var previousMousePosition = {{ x: 0, y: 0 }};
+
+            function onMouseDown( event ) {{
+                isDragging = true;
+                previousMousePosition.x = event.clientX;
+                previousMousePosition.y = event.clientY;
+            }}
+
+            function onMouseMove( event ) {{
+                if ( !isDragging ) return;
+                var deltaX = event.clientX - previousMousePosition.x;
+                var deltaY = event.clientY - previousMousePosition.y;
+                sphericalDelta.theta -= deltaX * 0.01 * scope.rotateSpeed;
+                sphericalDelta.phi -= deltaY * 0.01 * scope.rotateSpeed;
+                previousMousePosition.x = event.clientX;
+                previousMousePosition.y = event.clientY;
+            }}
+
+            function onMouseUp() {{
+                isDragging = false;
+            }}
+
+            function onMouseWheel( event ) {{
+                event.preventDefault();
+                if ( event.deltaY < 0 ) {{
+                    scale /= Math.pow( 0.95, scope.zoomSpeed );
+                }} else {{
+                    scale *= Math.pow( 0.95, scope.zoomSpeed );
+                }}
+            }}
+
+            this.update = function () {{
+                var offset = new THREE.Vector3();
+                var position = scope.object.position;
+                offset.copy( position ).sub( scope.target );
+                spherical.setFromVector3( offset );
+                spherical.theta += sphericalDelta.theta;
+                spherical.phi += sphericalDelta.phi;
+                spherical.phi = Math.max( 0.1, Math.min( Math.PI - 0.1, spherical.phi ) );
+                spherical.radius *= scale;
+                spherical.radius = Math.max( scope.minDistance, Math.min( scope.maxDistance, spherical.radius ) );
+                offset.setFromSpherical( spherical );
+                position.copy( scope.target ).add( offset );
+                scope.object.lookAt( scope.target );
+
+                if ( scope.enableDamping ) {{
+                    sphericalDelta.theta *= ( 1 - scope.dampingFactor );
+                    sphericalDelta.phi *= ( 1 - scope.dampingFactor );
+                }} else {{
+                    sphericalDelta.set( 0, 0, 0 );
+                }}
+                scale = 1;
+            }};
+
+            domElement.addEventListener( 'mousedown', onMouseDown, false );
+            document.addEventListener( 'mousemove', onMouseMove, false );
+            document.addEventListener( 'mouseup', onMouseUp, false );
+            domElement.addEventListener( 'wheel', onMouseWheel, false );
+        }};
+
+        // ========== 主逻辑 ==========
         window.onerror = function(msg) {{
             document.getElementById('error-tip').innerText = '渲染错误: ' + msg;
         }};
@@ -153,13 +228,13 @@ if len(frames_data) > 0:
             return new THREE.Vector3(x, z, -y);
         }}
 
-        // ========== 初始化场景 ==========
+        // 初始化场景
         const container = document.getElementById('canvas-container');
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0e1117);
 
         const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 1000000);
-        const renderer = new THREE.WebGLRenderer({{ antialias:true, preserveDrawingBuffer:true }});
+        const renderer = new THREE.WebGLRenderer({{ antialias:true }});
         renderer.setSize(container.clientWidth, container.clientHeight);
         container.appendChild(renderer.domElement);
 
@@ -170,7 +245,7 @@ if len(frames_data) > 0:
         const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
         scene.add(gridHelper);
 
-        // ========== 轨迹线 ==========
+        // 轨迹线
         const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
         const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
         const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({{ color: 0x888888 }}));
@@ -182,7 +257,7 @@ if len(frames_data) > 0:
         );
         scene.add(flownLine);
 
-        // ========== 飞机模型 ==========
+        // 飞机模型
         const aircraftGroup = new THREE.Group();
         const bodyPts = [
             new THREE.Vector3(80, 0, 0),
@@ -215,7 +290,7 @@ if len(frames_data) > 0:
         controls.target.copy(center);
         controls.update();
 
-        // ========== 控件元素 ==========
+        // 控件
         const playBtn = document.getElementById('playBtn');
         const speedSelect = document.getElementById('speedSelect');
         const frameSlider = document.getElementById('frameSlider');
@@ -231,7 +306,7 @@ if len(frames_data) > 0:
         let lastTime = null;
         const frameInterval = 100;
 
-        // ========== 更新单帧 ==========
+        // 更新单帧
         function updateFrame() {{
             const frame = frames[currentFrame];
             const pos = enu2three(frame.x, frame.y, frame.z);
@@ -266,7 +341,7 @@ if len(frames_data) > 0:
             frameSlider.value = currentFrame;
         }}
 
-        // ========== 事件绑定 ==========
+        // 事件绑定
         playBtn.addEventListener('click', function() {{
             if (currentFrame >= totalFrames - 1) {{
                 currentFrame = 0;
@@ -288,7 +363,7 @@ if len(frames_data) > 0:
             updateFrame();
         }});
 
-        // ========== 动画主循环 ==========
+        // 动画循环
         function animate(time) {{
             requestAnimationFrame(animate);
 
@@ -321,11 +396,9 @@ if len(frames_data) > 0:
             renderer.setSize(container.clientWidth, container.clientHeight);
         }});
 
-        // 初始化第一帧并启动循环
+        // 初始化
         updateFrame();
         animate(0);
-
-        // 清除错误提示
         document.getElementById('error-tip').innerText = '';
         </script>
     </body>
