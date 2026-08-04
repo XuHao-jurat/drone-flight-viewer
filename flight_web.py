@@ -21,9 +21,9 @@ def euler_rotation_matrix(heading_deg, pitch_deg, roll_deg):
         [0, 0, 1]
     ])
     Rp = np.array([
-        [np.cos(pitch), 0, np.sin(pitch)],
+        [np.cos(p), 0, np.sin(p)],
         [0, 1, 0],
-        [-np.sin(pitch), 0, np.cos(pitch)]
+        [-np.sin(p), 0, np.cos(p)]
     ])
     Rr = np.array([
         [1, 0, 0],
@@ -89,12 +89,9 @@ if len(frames_data) > 0:
     <html lang="zh-CN">
     <head>
         <meta charset="UTF-8">
-        <!-- 修复：使用兼容全局挂载的 Three.js + OrbitControls -->
-        <script src="https://cdn.jsdelivr.net/npm/three@0.148.0/build/three.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.148.0/examples/js/controls/OrbitControls.js"></script>
         <style>
             * {{ margin:0; padding:0; box-sizing:border-box; font-family:Arial, sans-serif; }}
-            html, body {{ width:100%; height:100%; overflow:hidden; background:#0e1117; color:#fff; }}
+            html, body {{ width:100%; height:700px; overflow:hidden; background:#0e1117; color:#fff; }}
             .control-bar {{
                 height:50px; display:flex; align-items:center; gap:15px;
                 padding:0 20px; background:#1a1c23; border-bottom:1px solid #333;
@@ -107,10 +104,15 @@ if len(frames_data) > 0:
                 background:rgba(0,0,0,0.75); padding:15px; border-radius:8px;
                 font-size:14px; line-height:2; z-index:10;
             }}
-            #canvas-container {{ width:100%; height:calc(100% - 50px); }}
+            #error-tip {{
+                position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+                color:#ff4444; font-size:16px; z-index:99;
+            }}
+            #canvas-container {{ width:100%; height:650px; }}
         </style>
     </head>
     <body>
+        <div id="error-tip"></div>
         <div class="control-bar">
             <button id="playBtn">▶️ 播放</button>
             <label>倍速：
@@ -133,188 +135,198 @@ if len(frames_data) > 0:
             <div>滚转 Roll: <span id="rolVal">0</span> °</div>
         </div>
 
+        <!-- 换用cdnjs稳定CDN，确保加载成功 -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/controls/OrbitControls.js"></script>
+
         <script>
-        window.onload = function() {{
-            const frames = {data_json};
-            const totalFrames = frames.length;
+        // 全局错误捕获，有问题显示在页面上
+        window.onerror = function(msg) {{
+            document.getElementById('error-tip').innerText = '渲染错误: ' + msg;
+        }};
 
-            // ENU 转 Three.js 坐标系：东→X  上→Y  北→-Z
-            function enu2three(x, y, z) {{
-                return new THREE.Vector3(x, z, -y);
-            }}
+        const frames = {data_json};
+        const totalFrames = frames.length;
 
-            // ========== 初始化场景 ==========
-            const container = document.getElementById('canvas-container');
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x0e1117);
+        // ENU 转 Three.js 坐标系：东→X  上→Y  北→-Z
+        function enu2three(x, y, z) {{
+            return new THREE.Vector3(x, z, -y);
+        }}
 
-            const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 1000000);
-            const renderer = new THREE.WebGLRenderer({{ antialias:true }});
-            renderer.setSize(container.clientWidth, container.clientHeight);
-            container.appendChild(renderer.domElement);
+        // ========== 初始化场景 ==========
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0e1117);
 
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
+        const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 1000000);
+        const renderer = new THREE.WebGLRenderer({{ antialias:true, preserveDrawingBuffer:true }});
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        container.appendChild(renderer.domElement);
 
-            // 地面网格
-            const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
-            scene.add(gridHelper);
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
 
-            // ========== 轨迹线 ==========
-            const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
-            const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
-            const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({{ color: 0x888888 }}));
-            scene.add(fullLine);
+        // 地面网格
+        const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
+        scene.add(gridHelper);
 
-            const flownLine = new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints([allPoints[0]]),
-                new THREE.LineBasicMaterial({{ color: 0xff4444 }})
+        // ========== 轨迹线 ==========
+        const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
+        const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
+        const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({{ color: 0x888888 }}));
+        scene.add(fullLine);
+
+        const flownLine = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([allPoints[0]]),
+            new THREE.LineBasicMaterial({{ color: 0xff4444 }})
+        );
+        scene.add(flownLine);
+
+        // ========== 飞机模型 ==========
+        const aircraftGroup = new THREE.Group();
+        const bodyPts = [
+            new THREE.Vector3(80, 0, 0),
+            new THREE.Vector3(-50, 0, 0),
+            new THREE.Vector3(-10, 0, 60),
+            new THREE.Vector3(-10, 0, -60),
+            new THREE.Vector3(-35, 25, 0)
+        ];
+        [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {{
+            const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
+            aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({{ color: 0xff3333 }})));
+        }});
+        aircraftGroup.add(new THREE.AxesHelper(100));
+        scene.add(aircraftGroup);
+
+        // 水平基准坐标系
+        const horizonGroup = new THREE.Group();
+        const hAxis = new THREE.AxesHelper(100);
+        hAxis.material.opacity = 0.4;
+        hAxis.material.transparent = true;
+        horizonGroup.add(hAxis);
+        scene.add(horizonGroup);
+
+        // 相机自动适配
+        const box = new THREE.Box3().setFromPoints(allPoints);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z) || 1000;
+        camera.position.set(center.x + maxDim*1.5, center.y + maxDim*1.2, center.z + maxDim*1.5);
+        controls.target.copy(center);
+        controls.update();
+
+        // ========== 控件元素 ==========
+        const playBtn = document.getElementById('playBtn');
+        const speedSelect = document.getElementById('speedSelect');
+        const frameSlider = document.getElementById('frameSlider');
+        const frameText = document.getElementById('frameText');
+        const hdgVal = document.getElementById('hdgVal');
+        const pitVal = document.getElementById('pitVal');
+        const rolVal = document.getElementById('rolVal');
+
+        // 播放状态
+        let currentFrame = 0;
+        let isPlaying = false;
+        let speed = 1;
+        let lastTime = null;
+        const frameInterval = 100;
+
+        // ========== 更新单帧 ==========
+        function updateFrame() {{
+            const frame = frames[currentFrame];
+            const pos = enu2three(frame.x, frame.y, frame.z);
+
+            aircraftGroup.position.copy(pos);
+            horizonGroup.position.copy(pos);
+
+            // 应用旋转矩阵
+            const R = frame.R;
+            const m = new THREE.Matrix4();
+            m.set(
+                R[0], R[3], R[6], 0,
+                R[1], R[4], R[7], 0,
+                R[2], R[5], R[8], 0,
+                0, 0, 0, 1
             );
-            scene.add(flownLine);
+            aircraftGroup.setRotationFromMatrix(m);
 
-            // ========== 飞机模型 ==========
-            const aircraftGroup = new THREE.Group();
-            const bodyPts = [
-                new THREE.Vector3(80, 0, 0),
-                new THREE.Vector3(-50, 0, 0),
-                new THREE.Vector3(-10, 0, 60),
-                new THREE.Vector3(-10, 0, -60),
-                new THREE.Vector3(-35, 25, 0)
-            ];
-            [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {{
-                const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
-                aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({{ color: 0xff3333 }})));
-            }});
-            aircraftGroup.add(new THREE.AxesHelper(100));
-            scene.add(aircraftGroup);
+            // 水平基准只转航向
+            horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
 
-            // 水平基准坐标系
-            const horizonGroup = new THREE.Group();
-            const hAxis = new THREE.AxesHelper(100);
-            hAxis.material.opacity = 0.4;
-            hAxis.material.transparent = true;
-            horizonGroup.add(hAxis);
-            scene.add(horizonGroup);
+            // 更新已飞轨迹
+            const flownPts = allPoints.slice(0, currentFrame + 1);
+            flownLine.geometry.dispose();
+            flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
-            // 相机自动适配
-            const box = new THREE.Box3().setFromPoints(allPoints);
-            const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
-            const maxDim = Math.max(size.x, size.y, size.z);
-            camera.position.set(center.x + maxDim*1.5, center.y + maxDim*1.2, center.z + maxDim*1.5);
-            controls.target.copy(center);
-            controls.update();
+            // 更新UI
+            hdgVal.textContent = frame.heading.toFixed(1);
+            pitVal.textContent = frame.pitch.toFixed(1);
+            rolVal.textContent = frame.roll.toFixed(1);
+            frameText.textContent = `第 ${{currentFrame + 1}} / ${{totalFrames}} 帧`;
+            frameSlider.value = currentFrame;
+        }}
 
-            // ========== 控件元素 ==========
-            const playBtn = document.getElementById('playBtn');
-            const speedSelect = document.getElementById('speedSelect');
-            const frameSlider = document.getElementById('frameSlider');
-            const frameText = document.getElementById('frameText');
-            const hdgVal = document.getElementById('hdgVal');
-            const pitVal = document.getElementById('pitVal');
-            const rolVal = document.getElementById('rolVal');
-
-            // 播放状态
-            let currentFrame = 0;
-            let isPlaying = false;
-            let speed = 1;
-            let lastTime = null;
-            const frameInterval = 100;
-
-            // ========== 更新单帧 ==========
-            function updateFrame() {{
-                const frame = frames[currentFrame];
-                const pos = enu2three(frame.x, frame.y, frame.z);
-
-                aircraftGroup.position.copy(pos);
-                horizonGroup.position.copy(pos);
-
-                // 应用旋转矩阵
-                const R = frame.R;
-                const m = new THREE.Matrix4();
-                m.set(
-                    R[0], R[3], R[6], 0,
-                    R[1], R[4], R[7], 0,
-                    R[2], R[5], R[8], 0,
-                    0, 0, 0, 1
-                );
-                aircraftGroup.setRotationFromMatrix(m);
-
-                // 水平基准只转航向
-                horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
-
-                // 更新已飞轨迹
-                const flownPts = allPoints.slice(0, currentFrame + 1);
-                flownLine.geometry.dispose();
-                flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
-
-                // 更新UI
-                hdgVal.textContent = frame.heading.toFixed(1);
-                pitVal.textContent = frame.pitch.toFixed(1);
-                rolVal.textContent = frame.roll.toFixed(1);
-                frameText.textContent = `第 ${{currentFrame + 1}} / ${{totalFrames}} 帧`;
-                frameSlider.value = currentFrame;
+        // ========== 事件绑定 ==========
+        playBtn.addEventListener('click', function() {{
+            if (currentFrame >= totalFrames - 1) {{
+                currentFrame = 0;
             }}
+            isPlaying = !isPlaying;
+            lastTime = null;
+            playBtn.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
+        }});
 
-            // ========== 事件绑定 ==========
-            playBtn.addEventListener('click', function() {{
-                if (currentFrame >= totalFrames - 1) {{
-                    currentFrame = 0;
-                }}
-                isPlaying = !isPlaying;
-                lastTime = null;
-                playBtn.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
-            }});
+        speedSelect.addEventListener('change', e => {{
+            speed = parseFloat(e.target.value);
+            lastTime = null;
+        }});
 
-            speedSelect.addEventListener('change', e => {{
-                speed = parseFloat(e.target.value);
-                lastTime = null;
-            }});
+        frameSlider.addEventListener('input', e => {{
+            currentFrame = parseInt(e.target.value);
+            isPlaying = false;
+            playBtn.textContent = '▶️ 播放';
+            updateFrame();
+        }});
 
-            frameSlider.addEventListener('input', e => {{
-                currentFrame = parseInt(e.target.value);
-                isPlaying = false;
-                playBtn.textContent = '▶️ 播放';
-                updateFrame();
-            }});
+        // ========== 动画主循环 ==========
+        function animate(time) {{
+            requestAnimationFrame(animate);
 
-            // ========== 动画主循环 ==========
-            function animate(time) {{
-                requestAnimationFrame(animate);
-
-                if (isPlaying) {{
-                    if (lastTime === null) {{
+            if (isPlaying) {{
+                if (lastTime === null) {{
+                    lastTime = time;
+                }} else {{
+                    const delta = time - lastTime;
+                    if (delta > frameInterval / speed) {{
                         lastTime = time;
-                    }} else {{
-                        const delta = time - lastTime;
-                        if (delta > frameInterval / speed) {{
-                            lastTime = time;
-                            if (currentFrame < totalFrames - 1) {{
-                                currentFrame++;
-                                updateFrame();
-                            }} else {{
-                                isPlaying = false;
-                                playBtn.textContent = '▶️ 播放';
-                            }}
+                        if (currentFrame < totalFrames - 1) {{
+                            currentFrame++;
+                            updateFrame();
+                        }} else {{
+                            isPlaying = false;
+                            playBtn.textContent = '▶️ 播放';
                         }}
                     }}
                 }}
-
-                controls.update();
-                renderer.render(scene, camera);
             }}
 
-            // 窗口自适应
-            window.addEventListener('resize', () => {{
-                camera.aspect = container.clientWidth / container.clientHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(container.clientWidth, container.clientHeight);
-            }});
+            controls.update();
+            renderer.render(scene, camera);
+        }}
 
-            // 初始化
-            updateFrame();
-            animate(0);
-        }};
+        // 窗口自适应
+        window.addEventListener('resize', () => {{
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }});
+
+        // 初始化第一帧并启动循环
+        updateFrame();
+        animate(0);
+
+        // 清除错误提示
+        document.getElementById('error-tip').innerText = '';
         </script>
     </body>
     </html>
