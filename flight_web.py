@@ -9,7 +9,7 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
-# ===================== 姿态旋转矩阵 =====================
+# ===================== 姿态旋转矩阵 + 坐标系转换 =====================
 def euler_rotation_matrix(heading_deg, pitch_deg, roll_deg):
     h = np.radians(heading_deg)
     p = np.radians(pitch_deg)
@@ -30,7 +30,17 @@ def euler_rotation_matrix(heading_deg, pitch_deg, roll_deg):
         [0, np.cos(r), -np.sin(r)],
         [0, np.sin(r), np.cos(r)]
     ])
-    return Rh @ Rp @ Rr
+    R_enu = Rh @ Rp @ Rr
+
+    # ENU坐标系 转 Three.js坐标系 转换矩阵
+    # ENU: X东 Y北 Z上  →  Three.js: X东 Y上 Z=-北
+    T = np.array([
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, -1, 0]
+    ])
+    R_three = T @ R_enu @ T.T
+    return R_three
 
 # 经纬度转局部东北天坐标系
 def ll2local_enu(lat0, lon0, lat, lon, alt):
@@ -84,7 +94,6 @@ if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
     
-    # 不用f-string，改用replace注入变量，避开大括号语法冲突
     html_template = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -157,7 +166,7 @@ if len(frames_data) > 0:
 
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
     <script>
-    // ========== 内嵌 OrbitControls（降低拖拽灵敏度） ==========
+    // ========== 内嵌 OrbitControls ==========
     THREE.OrbitControls = function ( object, domElement ) {
         this.object = object;
         this.domElement = domElement;
@@ -242,8 +251,10 @@ if len(frames_data) > 0:
     const frames = __DATA_JSON__;
     const totalFrames = frames.length;
 
-    const AIRCRAFT_AXIS_SIZE = 150;
-    const HORIZON_AXIS_SIZE  = 180;
+    // 尺寸配置
+    const AIRCRAFT_SIZE = 120;        // 飞机整体大小
+    const AIRCRAFT_AXIS_SIZE = 200;  // 机体坐标轴大小
+    const HORIZON_AXIS_SIZE  = 220;  // 水平基准坐标轴大小
 
     // ENU 转 Three.js 坐标系
     function enu2three(x, y, z) {
@@ -279,19 +290,29 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-    // 飞机模型
+    // ========== 飞机模型（加大+机头黄色标识） ==========
     const aircraftGroup = new THREE.Group();
+    // 机体顶点：X轴向前（机头），Z轴向右翼，Y轴向上
     const bodyPts = [
-        new THREE.Vector3(80, 0, 0),
-        new THREE.Vector3(-50, 0, 0),
-        new THREE.Vector3(-10, 0, 60),
-        new THREE.Vector3(-10, 0, -60),
-        new THREE.Vector3(-35, 25, 0)
+        new THREE.Vector3(AIRCRAFT_SIZE * 1.2, 0, 0),          // 机头（加长）
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.7, 0, 0),         // 机尾
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, 0, AIRCRAFT_SIZE * 0.9),  // 右翼尖
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, 0, -AIRCRAFT_SIZE * 0.9), // 左翼尖
+        new THREE.Vector3(-AIRCRAFT_SIZE * 0.5, AIRCRAFT_SIZE * 0.35, 0)   // 垂尾
     ];
+    // 机身连线
     [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {
         const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
         aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xff3333 })));
     });
+    // 机头黄色标识球，一眼分辨前后
+    const noseGeo = new THREE.SphereGeometry(AIRCRAFT_SIZE * 0.12, 8, 8);
+    const noseMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    const noseBall = new THREE.Mesh(noseGeo, noseMat);
+    noseBall.position.copy(bodyPts[0]);
+    aircraftGroup.add(noseBall);
+
+    // 机体坐标轴
     aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
     scene.add(aircraftGroup);
 
@@ -366,13 +387,13 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 应用旋转矩阵
+        // 正确应用旋转矩阵（行优先填入，和Python计算结果100%一致）
         const R = frame.R;
         const m = new THREE.Matrix4();
         m.set(
-            R[0], R[3], R[6], 0,
-            R[1], R[4], R[7], 0,
-            R[2], R[5], R[8], 0,
+            R[0], R[1], R[2], 0,
+            R[3], R[4], R[5], 0,
+            R[6], R[7], R[8], 0,
             0, 0, 0, 1
         );
         aircraftGroup.setRotationFromMatrix(m);
@@ -385,11 +406,8 @@ if len(frames_data) > 0:
         flownLine.geometry.dispose();
         flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
-        // 跟随飞机视角
+        // 跟随视角：只更新目标点，不强制相机位置，用户可自由缩放旋转
         if (followAircraft) {
-            const offset = new THREE.Vector3(maxDim * 0.8, maxDim * 0.5, maxDim * 1.2);
-            offset.applyMatrix4(m);
-            camera.position.copy(pos).add(offset);
             controls.target.copy(pos);
         }
 
