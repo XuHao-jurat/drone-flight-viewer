@@ -9,37 +9,32 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化（零闪烁版）")
 
-# ===================== 标准航空姿态解算（和桌面版完全一致） =====================
+# ===================== 标准航空姿态解算 =====================
 # 机体坐标系：X机头向前，Y右翼向右，Z向下（航空标准右手系）
 # ENU世界坐标系：X东，Y北，Z上
 def body_to_enu_rotation_matrix(heading_deg, pitch_deg, roll_deg):
-    h = np.radians(heading_deg)  # 航向：正北0°，顺时针
-    p = np.radians(pitch_deg)    # 俯仰：抬头为正
-    r = np.radians(roll_deg)     # 滚转：右翼下沉为正
+    h = np.radians(heading_deg)
+    p = np.radians(pitch_deg)
+    r = np.radians(roll_deg)
 
-    # 航向旋转（绕Z轴，向上为正）
     Rh = np.array([
         [np.cos(h), -np.sin(h), 0],
         [np.sin(h), np.cos(h), 0],
         [0, 0, 1]
     ])
-    # 俯仰旋转（绕Y轴，右翼方向）
     Rp = np.array([
         [np.cos(p), 0, np.sin(p)],
         [0, 1, 0],
         [-np.sin(p), 0, np.cos(p)]
     ])
-    # 滚转旋转（绕X轴，机头方向）
     Rr = np.array([
         [1, 0, 0],
         [0, np.cos(r), -np.sin(r)],
         [0, np.sin(r), np.cos(r)]
     ])
-    # 航空标准顺序：航向 → 俯仰 → 滚转
     return Rh @ Rp @ Rr
 
 # ENU → Three.js 坐标系变换矩阵
-# ENU: X东 Y北 Z上  →  Three.js: X东 Y上 Z=-北
 ENU_TO_THREE_T = np.array([
     [1, 0, 0],
     [0, 0, 1],
@@ -80,8 +75,7 @@ if load_btn:
         for _, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
             R_enu = body_to_enu_rotation_matrix(row["heading"], row["pitch"], row["roll"])
-            # 修正：直接左乘变换矩阵，不是相似变换
-            R_three = ENU_TO_THREE_T @ R_enu
+            R_three = ENU_TO_THREE_T @ R_enu @ ENU_TO_THREE_T.T
             frames_data.append({
                 "x": float(e),
                 "y": float(n),
@@ -257,7 +251,7 @@ if len(frames_data) > 0:
     const frames = __DATA_JSON__;
     const totalFrames = frames.length;
 
-    const AIRCRAFT_SIZE = 150;
+    const AIRCRAFT_SIZE = 180;
     const AIRCRAFT_AXIS_SIZE = 220;
     const HORIZON_AXIS_SIZE  = 250;
 
@@ -279,7 +273,7 @@ if len(frames_data) > 0:
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    // 地面网格（XZ水平面，Y向上）
+    // 地面网格
     const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
     scene.add(gridHelper);
 
@@ -295,33 +289,60 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-    // ========== 修正飞机模型：严格匹配机体坐标系 X前 Y右 Z下 ==========
+    // ========== 3D飞机模型（机头沿X轴正方向） ==========
     const aircraftGroup = new THREE.Group();
-    // 机体顶点：X机头向前，Y右翼向右，Z向下
-    const bodyPts = [
-        new THREE.Vector3(AIRCRAFT_SIZE, 0, 0),              // 机头（X+）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.7, 0, 0),       // 机尾（X-）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, 0, AIRCRAFT_SIZE * 0.85),  // 右翼尖（Z+）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.15, 0, -AIRCRAFT_SIZE * 0.85), // 左翼尖（Z-）
-        new THREE.Vector3(-AIRCRAFT_SIZE * 0.4, -AIRCRAFT_SIZE * 0.35, 0)   // 垂尾上（Y-，因为Y向上，机体Z向下对应-Y）
-    ];
-    // 机身连线
-    [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {
-        const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
-        aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xff3333 })));
-    });
-    // 机头黄色标识
-    const noseGeo = new THREE.SphereGeometry(AIRCRAFT_SIZE * 0.12, 8, 8);
-    const noseMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-    const noseBall = new THREE.Mesh(noseGeo, noseMat);
-    noseBall.position.copy(bodyPts[0]);
+    const s = AIRCRAFT_SIZE / 150; // 尺寸缩放系数
+
+    // 机身
+    const bodyGeo = new THREE.CylinderGeometry(3*s, 4.5*s, 100*s, 10);
+    const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.rotation.z = Math.PI / 2;
+    body.position.x = 10 * s;
+    aircraftGroup.add(body);
+
+    // 机头红色尖头
+    const noseGeo = new THREE.ConeGeometry(3*s, 40*s, 10);
+    const noseMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+    const nose = new THREE.Mesh(noseGeo, noseMat);
+    nose.rotation.z = Math.PI / 2;
+    nose.position.x = 80 * s;
+    aircraftGroup.add(nose);
+
+    // 主翼
+    const wingGeo = new THREE.BoxGeometry(15*s, 2*s, 120*s);
+    const wingMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const wing = new THREE.Mesh(wingGeo, wingMat);
+    wing.position.x = -10 * s;
+    aircraftGroup.add(wing);
+
+    // 尾翼组
+    const tailGroup = new THREE.Group();
+    // 水平尾翼
+    const hTailGeo = new THREE.BoxGeometry(10*s, 1.5*s, 50*s);
+    const hTail = new THREE.Mesh(hTailGeo, wingMat);
+    tailGroup.add(hTail);
+    // 垂直尾翼
+    const vTailGeo = new THREE.BoxGeometry(10*s, 30*s, 2*s);
+    const vTailMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+    const vTail = new THREE.Mesh(vTailGeo, vTailMat);
+    vTail.position.y = 15 * s;
+    tailGroup.add(vTail);
+    tailGroup.position.x = -45 * s;
+    aircraftGroup.add(tailGroup);
+
+    // 机头黄色标识球（一眼分辨前后）
+    const noseBallGeo = new THREE.SphereGeometry(8*s, 10, 10);
+    const noseBallMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    const noseBall = new THREE.Mesh(noseBallGeo, noseBallMat);
+    noseBall.position.x = 100 * s;
     aircraftGroup.add(noseBall);
 
     // 机体坐标轴
     aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
     scene.add(aircraftGroup);
 
-    // 水平基准坐标轴
+    // 水平基准坐标轴（永远水平）
     const horizonGroup = new THREE.Group();
     const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
     hAxis.material.opacity = 0.45;
@@ -392,18 +413,18 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 直接应用Python传过来的旋转矩阵（行优先填入）
+        // 列优先填入旋转矩阵，和Python计算结果完全一致
         const R = frame.R;
         const m = new THREE.Matrix4();
         m.set(
-            R[0], R[1], R[2], 0,
-            R[3], R[4], R[5], 0,
-            R[6], R[7], R[8], 0,
+            R[0], R[3], R[6], 0,
+            R[1], R[4], R[7], 0,
+            R[2], R[5], R[8], 0,
             0, 0, 0, 1
         );
         aircraftGroup.setRotationFromMatrix(m);
 
-        // 水平基准：只绕Y轴转航向，永远水平
+        // 水平基准只转航向
         horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
 
         // 更新已飞轨迹
@@ -411,7 +432,7 @@ if len(frames_data) > 0:
         flownLine.geometry.dispose();
         flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
-        // 跟随视角：更新目标点
+        // 跟随视角
         if (followAircraft) {
             controls.target.copy(pos);
         }
