@@ -52,7 +52,6 @@ with st.sidebar:
     load_btn = st.button("加载数据")
 
 # 加载数据并预处理
-df = None
 frames_data = []
 if load_btn:
     try:
@@ -82,7 +81,8 @@ if load_btn:
 
 # ===================== 渲染3D动画组件 =====================
 if len(frames_data) > 0:
-    data_json = json.dumps(frames_data)
+    data_json = json.dumps(frames_data, ensure_ascii=False)
+    total = len(frames_data)
     
     html_template = f"""
     <!DOCTYPE html>
@@ -103,7 +103,7 @@ if len(frames_data) > 0:
             select, input[type=range] {{ padding:4px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; }}
             .info-panel {{
                 position:absolute; top:70px; right:20px; width:180px;
-                background:rgba(0,0,0,0.7); padding:15px; border-radius:8px;
+                background:rgba(0,0,0,0.75); padding:15px; border-radius:8px;
                 font-size:14px; line-height:2; z-index:10;
             }}
             #canvas-container {{ width:100%; height:calc(100% - 50px); }}
@@ -122,12 +122,10 @@ if len(frames_data) > 0:
                     <option value="3">3x</option>
                 </select>
             </label>
-            <input type="range" id="frameSlider" min="0" max="{len(frames_data)-1}" value="0" style="flex:1;">
-            <span id="frameText">第 1 / {len(frames_data)} 帧</span>
+            <input type="range" id="frameSlider" min="0" max="{total-1}" value="0" style="flex:1;">
+            <span id="frameText">第 1 / {total} 帧</span>
         </div>
-
         <div id="canvas-container"></div>
-
         <div class="info-panel">
             <div>航向 Heading: <span id="hdgVal">0</span> °</div>
             <div>俯仰 Pitch: <span id="pitVal">0</span> °</div>
@@ -135,22 +133,21 @@ if len(frames_data) > 0:
         </div>
 
         <script>
+        window.onload = function() {{
             const frames = {data_json};
             const totalFrames = frames.length;
 
-            // ========== 坐标系转换：ENU → Three.js ==========
-            // ENU: X东 Y北 Z上  →  Three.js: X右 Y上 Z向屏幕内
+            // ENU 转 Three.js 坐标系：东→X  上→Y  北→-Z
             function enu2three(x, y, z) {{
                 return new THREE.Vector3(x, z, -y);
             }}
 
-            // ========== 初始化Three.js场景 ==========
+            // ========== 初始化场景 ==========
             const container = document.getElementById('canvas-container');
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x0e1117);
 
             const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 1000000);
-
             const renderer = new THREE.WebGLRenderer({{ antialias:true }});
             renderer.setSize(container.clientWidth, container.clientHeight);
             container.appendChild(renderer.domElement);
@@ -158,71 +155,56 @@ if len(frames_data) > 0:
             const controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
 
-            // 地面网格（XY平面 → Three.js XZ平面）
+            // 地面网格
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
             scene.add(gridHelper);
 
-            // ========== 绘制完整航线 ==========
+            // ========== 轨迹线 ==========
             const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
             const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
-            const fullLineMat = new THREE.LineBasicMaterial({{ color: 0x888888 }});
-            const fullLine = new THREE.Line(fullLineGeo, fullLineMat);
+            const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({{ color: 0x888888 }}));
             scene.add(fullLine);
 
-            // 已飞轨迹
-            const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
-            const flownLineMat = new THREE.LineBasicMaterial({{ color: 0xff4444 }});
-            const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
+            const flownLine = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([allPoints[0]]),
+                new THREE.LineBasicMaterial({{ color: 0xff4444 }})
+            );
             scene.add(flownLine);
 
-            // ========== 创建飞机模型 ==========
+            // ========== 飞机模型 ==========
             const aircraftGroup = new THREE.Group();
-            const bodyPoints = [
-                new THREE.Vector3(80, 0, 0),    // 机头（X向前）
-                new THREE.Vector3(-50, 0, 0),   // 机尾
-                new THREE.Vector3(-10, 0, 60),  // 右翼（Z向右翼，对应机体Y轴）
-                new THREE.Vector3(-10, 0, -60), // 左翼
-                new THREE.Vector3(-35, 25, 0)   // 垂尾（Y向上，对应机体Z轴）
+            const bodyPts = [
+                new THREE.Vector3(80, 0, 0),
+                new THREE.Vector3(-50, 0, 0),
+                new THREE.Vector3(-10, 0, 60),
+                new THREE.Vector3(-10, 0, -60),
+                new THREE.Vector3(-35, 25, 0)
             ];
-            const lines = [[0,1],[1,2],[1,3],[1,4]];
-            lines.forEach(([a,b]) => {{
-                const geo = new THREE.BufferGeometry().setFromPoints([bodyPoints[a], bodyPoints[b]]);
-                const mat = new THREE.LineBasicMaterial({{ color: 0xff3333 }});
-                aircraftGroup.add(new THREE.Line(geo, mat));
+            [[0,1],[1,2],[1,3],[1,4]].forEach(([a,b]) => {{
+                const geo = new THREE.BufferGeometry().setFromPoints([bodyPts[a], bodyPts[b]]);
+                aircraftGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({{ color: 0xff3333 }})));
             }});
+            aircraftGroup.add(new THREE.AxesHelper(100));
             scene.add(aircraftGroup);
-
-            // 机体坐标轴
-            const axisHelper = new THREE.AxesHelper(100);
-            aircraftGroup.add(axisHelper);
 
             // 水平基准坐标系
             const horizonGroup = new THREE.Group();
-            const horizonAxis = new THREE.AxesHelper(100);
-            horizonAxis.material.transparent = true;
-            horizonAxis.material.opacity = 0.4;
-            horizonGroup.add(horizonAxis);
+            const hAxis = new THREE.AxesHelper(100);
+            hAxis.material.opacity = 0.4;
+            hAxis.material.transparent = true;
+            horizonGroup.add(hAxis);
             scene.add(horizonGroup);
 
-            // ========== 自动适配相机位置 ==========
+            // 相机自动适配
             const box = new THREE.Box3().setFromPoints(allPoints);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z);
-            camera.position.copy(center);
-            camera.position.x += maxDim * 1.5;
-            camera.position.y += maxDim * 1.2;
-            camera.position.z += maxDim * 1.5;
+            camera.position.set(center.x + maxDim*1.5, center.y + maxDim*1.2, center.z + maxDim*1.5);
             controls.target.copy(center);
             controls.update();
 
-            // ========== 播放控制 ==========
-            let currentFrame = 0;
-            let isPlaying = false;
-            let speed = 1;
-            let lastTime = 0;
-            const frameInterval = 100;
-
+            // ========== 控件元素 ==========
             const playBtn = document.getElementById('playBtn');
             const speedSelect = document.getElementById('speedSelect');
             const frameSlider = document.getElementById('frameSlider');
@@ -231,47 +213,39 @@ if len(frames_data) > 0:
             const pitVal = document.getElementById('pitVal');
             const rolVal = document.getElementById('rolVal');
 
-            playBtn.addEventListener('click', () => {{
-                isPlaying = !isPlaying;
-                playBtn.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
-            }});
+            // 播放状态
+            let currentFrame = 0;
+            let isPlaying = false;
+            let speed = 1;
+            let lastTime = null; // 修复首帧跳变bug
+            const frameInterval = 100;
 
-            speedSelect.addEventListener('change', e => {{
-                speed = parseFloat(e.target.value);
-            }});
-
-            frameSlider.addEventListener('input', e => {{
-                currentFrame = parseInt(e.target.value);
-                updateFrame();
-            }});
-
-            // 更新单帧
+            // ========== 更新单帧 ==========
             function updateFrame() {{
                 const frame = frames[currentFrame];
                 const pos = enu2three(frame.x, frame.y, frame.z);
-                
+
                 aircraftGroup.position.copy(pos);
                 horizonGroup.position.copy(pos);
 
-                // 旋转矩阵：行优先填入Three.js矩阵
+                // 应用旋转矩阵
                 const R = frame.R;
                 const m = new THREE.Matrix4();
                 m.set(
-                    R[0], R[1], R[2], 0,
-                    R[3], R[4], R[5], 0,
-                    R[6], R[7], R[8], 0,
+                    R[0], R[3], R[6], 0,
+                    R[1], R[4], R[7], 0,
+                    R[2], R[5], R[8], 0,
                     0, 0, 0, 1
                 );
                 aircraftGroup.setRotationFromMatrix(m);
 
-                // 水平基准：只转航向
-                const hRad = THREE.MathUtils.degToRad(frame.heading);
-                horizonGroup.rotation.y = hRad;
+                // 水平基准只转航向
+                horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
 
                 // 更新已飞轨迹
-                const flownPoints = allPoints.slice(0, currentFrame + 1);
+                const flownPts = allPoints.slice(0, currentFrame + 1);
                 flownLine.geometry.dispose();
-                flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPoints);
+                flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
                 // 更新UI
                 hdgVal.textContent = frame.heading.toFixed(1);
@@ -281,20 +255,46 @@ if len(frames_data) > 0:
                 frameSlider.value = currentFrame;
             }}
 
-            // 动画循环
+            // ========== 事件绑定 ==========
+            playBtn.addEventListener('click', function() {{
+                if (currentFrame >= totalFrames - 1) {{
+                    currentFrame = 0; // 播完了就从头开始
+                }}
+                isPlaying = !isPlaying;
+                lastTime = null; // 重置时间基准
+                playBtn.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
+            }});
+
+            speedSelect.addEventListener('change', e => {{
+                speed = parseFloat(e.target.value);
+                lastTime = null;
+            }});
+
+            frameSlider.addEventListener('input', e => {{
+                currentFrame = parseInt(e.target.value);
+                isPlaying = false;
+                playBtn.textContent = '▶️ 播放';
+                updateFrame();
+            }});
+
+            // ========== 动画主循环 ==========
             function animate(time) {{
                 requestAnimationFrame(animate);
-                
+
                 if (isPlaying) {{
-                    const delta = time - lastTime;
-                    if (delta > frameInterval / speed) {{
-                        lastTime = time;
-                        if (currentFrame < totalFrames - 1) {{
-                            currentFrame++;
-                            updateFrame();
-                        }} else {{
-                            isPlaying = false;
-                            playBtn.textContent = '▶️ 播放';
+                    if (lastTime === null) {{
+                        lastTime = time; // 第一帧只记录时间，不跳帧
+                    }} else {{
+                        const delta = time - lastTime;
+                        if (delta > frameInterval / speed) {{
+                            lastTime = time;
+                            if (currentFrame < totalFrames - 1) {{
+                                currentFrame++;
+                                updateFrame();
+                            }} else {{
+                                isPlaying = false;
+                                playBtn.textContent = '▶️ 播放';
+                            }}
                         }}
                     }}
                 }}
@@ -310,9 +310,10 @@ if len(frames_data) > 0:
                 renderer.setSize(container.clientWidth, container.clientHeight);
             }});
 
-            // 初始化
+            // 初始化第一帧并启动循环
             updateFrame();
             animate(0);
+        }};
         </script>
     </body>
     </html>
