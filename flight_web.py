@@ -400,7 +400,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-    // 更新单帧
+       // 更新单帧
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -408,19 +408,11 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 列优先填入旋转矩阵
-        const R = frame.R;
-        const m = new THREE.Matrix4();
-        m.set(
-            R[0], R[3], R[6], 0,
-            R[1], R[4], R[7], 0,
-            R[2], R[5], R[8], 0,
-            0, 0, 0, 1
-        );
-        aircraftGroup.setRotationFromMatrix(m);
+        // 临时：姿态归零，先验证模型本身方向
+        aircraftGroup.rotation.set(0, 0, 0);
 
-        // 水平基准航向对齐
-        horizonGroup.rotation.y = THREE.MathUtils.degToRad(frame.heading);
+        // 水平基准也归零
+        horizonGroup.rotation.y = 0;
 
         // 更新已飞轨迹
         const flownPts = allPoints.slice(0, currentFrame + 1);
