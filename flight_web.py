@@ -3,48 +3,13 @@ import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import json
-from io import StringIO, BytesIO
+from io import StringIO
 
 # ===================== 页面基础配置 =====================
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化工具")
 
 # ===================== 标准航空姿态解算 =====================
-def body_to_enu_rotation_matrix(heading_deg, pitch_deg, roll_deg):
-    h = np.radians(heading_deg)
-    p = np.radians(pitch_deg)
-    r = np.radians(roll_deg)
-
-    R0 = np.array([
-        [0, 1, 0],
-        [1, 0, 0],
-        [0, 0, -1]
-    ])
-
-    Rz = np.array([
-        [np.cos(h), -np.sin(h), 0],
-        [np.sin(h), np.cos(h), 0],
-        [0, 0, 1]
-    ])
-    Ry = np.array([
-        [np.cos(p), 0, np.sin(p)],
-        [0, 1, 0],
-        [-np.sin(p), 0, np.cos(p)]
-    ])
-    Rx = np.array([
-        [1, 0, 0],
-        [0, np.cos(r), -np.sin(r)],
-        [0, np.sin(r), np.cos(r)]
-    ])
-
-    return R0 @ Rz @ Ry @ Rx
-
-ENU_TO_THREE_T = np.array([
-    [1, 0, 0],
-    [0, 0, 1],
-    [0, -1, 0]
-])
-
 def ll2local_enu(lat0, lon0, lat, lon, alt):
     R = 6371000
     dlat = np.radians(lat - lat0)
@@ -55,26 +20,31 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== 侧边栏数据输入 =====================
-with st.sidebar:
-    st.header("数据输入")
-    input_mode = st.radio("选择数据输入方式", ["粘贴CSV文本", "上传CSV文件"])
-    csv_text = st.text_area("粘贴CSV数据", height=280)
-    uploaded_file = st.file_uploader("上传CSV文件", type=["csv"])
-    load_btn = st.button("加载数据")
-
-# 统一数据解析函数：粘贴和上传都走同一个逻辑
+# ===================== 统一CSV解析（含自动错位修复） =====================
 def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(csv_string))
-    # 自动去除列名前后空格，解决隐形空格导致的列匹配问题
+    # 1. 基础清洗：去除列名空格
     df.columns = df.columns.str.strip()
-    
+
+    # 2. 自动修复：表头前导逗号导致的列错位
+    # 判断逻辑：首列列名为空，且timestamp列的值像纬度（在-90~90之间）
+    if len(df.columns) > 0 and df.columns[0] == '' and 'timestamp' in df.columns:
+        first_timestamp_val = pd.to_numeric(df['timestamp'].iloc[0], errors='coerce')
+        if not pd.isna(first_timestamp_val) and -90 < first_timestamp_val < 90:
+            # 列名整体左移一位，空列移到末尾
+            new_cols = list(df.columns[1:]) + ['_unused_col']
+            df.columns = new_cols
+            # 删除末尾的空列
+            df = df.drop(columns=['_unused_col'])
+            # 再次清洗列名
+            df.columns = df.columns.str.strip()
+
+    # 3. 强制数值转换
     required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"缺少必填列：{missing_cols}")
     
-    # 强制转数值类型，去除空值
     for col in required_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=required_cols).reset_index(drop=True)
@@ -83,10 +53,17 @@ def parse_csv_data(csv_string):
         raise ValueError("有效数据行为0")
     return df
 
+# ===================== 侧边栏数据输入 =====================
+with st.sidebar:
+    st.header("数据输入")
+    input_mode = st.radio("选择数据输入方式", ["粘贴CSV文本", "上传CSV文件"])
+    csv_text = st.text_area("粘贴CSV数据", height=280)
+    uploaded_file = st.file_uploader("上传CSV文件", type=["csv"])
+    load_btn = st.button("加载数据")
+
 frames_data = []
 if load_btn:
     try:
-        # 两种输入方式最终都统一成纯文本字符串
         if input_mode == "粘贴CSV文本":
             if not csv_text.strip():
                 st.error("请粘贴有效的CSV数据")
@@ -96,7 +73,6 @@ if load_btn:
             if uploaded_file is None:
                 st.error("请先选择要上传的CSV文件")
                 st.stop()
-            # 核心修复：字节流解码为字符串，兼容UTF-8和带BOM的UTF-8
             file_bytes = uploaded_file.getvalue()
             try:
                 raw_text = file_bytes.decode('utf-8-sig')
@@ -119,8 +95,7 @@ if load_btn:
                 "roll": float(row["roll"])
             })
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
-        # 调试信息：输出坐标范围，方便排查
-        st.caption(f"坐标范围：东向 {min(f['x'] for f in frames_data):.1f} ~ {max(f['x'] for f in frames_data):.1f} m")
+        st.caption(f"首帧姿态：航向 {frames_data[0]['heading']:.1f}° / 俯仰 {frames_data[0]['pitch']:.1f}° / 滚转 {frames_data[0]['roll']:.1f}°")
         
     except Exception as e:
         st.error(f"数据解析失败：{str(e)}")
