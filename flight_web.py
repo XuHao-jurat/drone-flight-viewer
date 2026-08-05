@@ -22,38 +22,92 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
 
 # ===================== 鲁棒CSV解析（自动修复列错位） =====================
 def parse_csv_data(csv_string):
-    df = pd.read_csv(StringIO(csv_string))
-    df.columns = df.columns.str.strip()
+    import pandas as pd
+    from io import StringIO
+
+    lines = csv_string.splitlines()
+    if not lines:
+        raise ValueError("CSV 数据为空")
+
+    # --------------------------
+    # 1. 先解析原始列
+    # --------------------------
+    df_raw = pd.read_csv(StringIO(csv_string))
+    df_raw.columns = df_raw.columns.str.strip()
+
     required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
 
-    # ===== 核心修复：自动检测并修复前导空列导致的整体右移 =====
-    # 情况1：首列是Unnamed空列，且timestamp列的值是纬度数值（典型错位特征）
-    if len(df.columns) > 0 and str(df.columns[0]).startswith('Unnamed'):
-        # 检查第二列（原timestamp列）的值是不是纬度范围
-        second_col_vals = pd.to_numeric(df.iloc[:, 1], errors='coerce').dropna()
-        if len(second_col_vals) > 0 and -90 < second_col_vals.iloc[0] < 90:
-            # 整体左移一列：删除首列空列，列名自动对齐
+    # 如果已经有完整列，直接走标准流程
+    if all(col in df_raw.columns for col in required_cols):
+        df = df_raw.copy()
+    else:
+        # --------------------------
+        # 2. 自动修复列错位
+        # --------------------------
+        st.warning("检测到CSV列名不匹配，尝试自动修复表头错位...")
+
+        # 去掉表头行开头的前导逗号
+        if lines[0].strip().startswith(','):
+            lines[0] = lines[0].strip()[1:]
+
+        csv_fixed = '\n'.join(lines)
+        df = pd.read_csv(StringIO(csv_fixed))
+        df.columns = df.columns.str.strip()
+
+        # 如果还是缺列，尝试把第一列删掉后重新对齐
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing and len(df.columns) > len(required_cols):
+            st.warning("第二次尝试修复：删除多余首列并重新对齐...")
             df = df.iloc[:, 1:].copy()
             df.columns = df.columns.str.strip()
 
-    # 情况2：如果还是缺列，再尝试一次左移（兼容更极端的错位）
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing and len(df.columns) > len(required_cols):
-        df = df.iloc[:, 1:].copy()
-        df.columns = df.columns.str.strip()
+        # 如果 heading 看起来像纬度/俯仰数据，说明还在错位，强制重命名
+        if "heading" in df.columns:
+            hdg_sample = pd.to_numeric(df["heading"], errors="coerce").dropna()
+            if len(hdg_sample) > 0 and hdg_sample.max() < 90 and hdg_sample.min() >= -90:
+                st.warning("检测到heading字段数值异常，强制按列位置重命名...")
 
-    # 最终校验
+                # 取后面6列强制映射到标准字段
+                if len(df.columns) >= 6:
+                    df = df.iloc[:, -6:].copy()
+                    df.columns = required_cols
+                else:
+                    raise ValueError("CSV列数不足，无法强制修复")
+
+    # --------------------------
+    # 3. 最终校验
+    # --------------------------
     missing_final = [c for c in required_cols if c not in df.columns]
     if missing_final:
-        raise ValueError(f"缺少必填列：{missing_final}，当前列名：{list(df.columns)}")
-    
-    # 强制转数值+去空
+        raise ValueError(
+            f"缺少必填列：{missing_final}，"
+            f"当前列名：{list(df.columns)}，"
+            f"原始列名：{list(df_raw.columns)}"
+        )
+
     for col in required_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
     df = df.dropna(subset=required_cols).reset_index(drop=True)
-    
+
     if len(df) == 0:
         raise ValueError("有效数据行为0")
+
+    # --------------------------
+    # 4. 调试信息：必须看这个
+    # --------------------------
+    st.subheader("🔍 解析诊断")
+    st.write(f"原始列名：{list(df_raw.columns)}")
+    st.write(f"修复后列名：{list(df.columns)}")
+    st.dataframe(df[required_cols].head(10), use_container_width=True)
+
+    st.write("纬度范围：", df["latitude"].min(), "~", df["latitude"].max())
+    st.write("经度范围：", df["longitude"].min(), "~", df["longitude"].max())
+    st.write("高度范围：", df["altitude"].min(), "~", df["altitude"].max())
+    st.write("航向范围：", df["heading"].min(), "~", df["heading"].max())
+    st.write("俯仰范围：", df["pitch"].min(), "~", df["pitch"].max())
+    st.write("滚转范围：", df["roll"].min(), "~", df["roll"].max())
+
     return df
 
 # ===================== 侧边栏数据输入 =====================
