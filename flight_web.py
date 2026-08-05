@@ -400,7 +400,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-           // 更新单帧姿态
+             // 更新单帧姿态
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -408,6 +408,7 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
+        // 修正航向旋转方向：匹配顺时针航向定义
         const h = THREE.MathUtils.degToRad(frame.heading - 90);
         const p = THREE.MathUtils.degToRad(frame.pitch);
         const r = THREE.MathUtils.degToRad(frame.roll);
@@ -417,7 +418,7 @@ if len(frames_data) > 0:
         // 航向：绕Y轴水平旋转，对齐正北基准
         aircraftGroup.rotation.y = h;
         // 俯仰：绕Z轴（机翼横轴），抬头为正
-        aircraftGroup.rotation.z = p;
+        aircraftGroup.rotation.z = -p;
         // 滚转：绕X轴（机身纵轴），右翼下沉为正
         aircraftGroup.rotation.x = r;
 
