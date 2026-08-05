@@ -9,7 +9,7 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化工具")
 
-# ===================== 标准航空姿态解算 =====================
+# ===================== 标准航空坐标转换 =====================
 def ll2local_enu(lat0, lon0, lat, lon, alt):
     R = 6371000
     dlat = np.radians(lat - lat0)
@@ -20,95 +20,118 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== 鲁棒CSV解析（自动修复列错位） =====================
+# ===================== 鲁棒CSV解析（数值特征自动匹配列） =====================
 def parse_csv_data(csv_string):
-    import pandas as pd
-    from io import StringIO
+    df = pd.read_csv(StringIO(csv_string))
+    df.columns = df.columns.str.strip()
 
-    lines = csv_string.splitlines()
-    if not lines:
-        raise ValueError("CSV 数据为空")
+    # 所有列强制转数值
+    num_df = df.apply(pd.to_numeric, errors="coerce")
 
-    # --------------------------
-    # 1. 先解析原始列
-    # --------------------------
-    df_raw = pd.read_csv(StringIO(csv_string))
-    df_raw.columns = df_raw.columns.str.strip()
+    # 统计每列数值特征
+    col_info = []
+    for col in num_df.columns:
+        vals = num_df[col].dropna()
+        if len(vals) == 0:
+            continue
+        col_info.append({
+            "name": col,
+            "min": float(vals.min()),
+            "max": float(vals.max()),
+            "mean": float(vals.mean()),
+            "std": float(vals.std())
+        })
 
-    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
+    matched = {}
 
-    # 如果已经有完整列，直接走标准流程
-    if all(col in df_raw.columns for col in required_cols):
-        df = df_raw.copy()
-    else:
-        # --------------------------
-        # 2. 自动修复列错位
-        # --------------------------
-        st.warning("检测到CSV列名不匹配，尝试自动修复表头错位...")
+    # 1. 匹配高度：数值最大，均值>1000
+    altitude_candidates = [c for c in col_info if c["mean"] > 1000]
+    if altitude_candidates:
+        matched["altitude"] = max(altitude_candidates, key=lambda x: x["mean"])["name"]
 
-        # 去掉表头行开头的前导逗号
-        if lines[0].strip().startswith(','):
-            lines[0] = lines[0].strip()[1:]
+    # 2. 匹配经度：-180~180，绝对值>90
+    lon_candidates = [
+        c for c in col_info
+        if -180 <= c["min"] and c["max"] <= 180 and abs(c["mean"]) > 90
+    ]
+    if lon_candidates:
+        matched["longitude"] = lon_candidates[0]["name"]
 
-        csv_fixed = '\n'.join(lines)
-        df = pd.read_csv(StringIO(csv_fixed))
-        df.columns = df.columns.str.strip()
+    # 3. 匹配纬度：-90~90，绝对值在20~80之间
+    lat_candidates = [
+        c for c in col_info
+        if -90 <= c["min"] and c["max"] <= 90 and 20 < abs(c["mean"]) < 80
+    ]
+    if lat_candidates:
+        matched["latitude"] = lat_candidates[0]["name"]
 
-        # 如果还是缺列，尝试把第一列删掉后重新对齐
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing and len(df.columns) > len(required_cols):
-            st.warning("第二次尝试修复：删除多余首列并重新对齐...")
-            df = df.iloc[:, 1:].copy()
-            df.columns = df.columns.str.strip()
+    # 4. 匹配航向：0~360，均值在100~300之间
+    heading_candidates = [
+        c for c in col_info
+        if 0 <= c["min"] and c["max"] <= 360 and 100 < c["mean"] < 300
+    ]
+    if heading_candidates:
+        matched["heading"] = heading_candidates[0]["name"]
 
-        # 如果 heading 看起来像纬度/俯仰数据，说明还在错位，强制重命名
-        if "heading" in df.columns:
-            hdg_sample = pd.to_numeric(df["heading"], errors="coerce").dropna()
-            if len(hdg_sample) > 0 and hdg_sample.max() < 90 and hdg_sample.min() >= -90:
-                st.warning("检测到heading字段数值异常，强制按列位置重命名...")
+    # 5. 匹配俯仰/滚转：小角度(-10~10)，标准差>0.1
+    angle_candidates = [
+        c for c in col_info
+        if -10 <= c["min"] and c["max"] <= 10 and c["std"] > 0.1
+    ]
+    if len(angle_candidates) >= 2:
+        angle_candidates.sort(key=lambda x: x["mean"], reverse=True)
+        matched["pitch"] = angle_candidates[0]["name"]
+        matched["roll"] = angle_candidates[1]["name"]
+    elif len(angle_candidates) == 1:
+        matched["pitch"] = angle_candidates[0]["name"]
+        matched["roll"] = None
 
-                # 取后面6列强制映射到标准字段
-                if len(df.columns) >= 6:
-                    df = df.iloc[:, -6:].copy()
-                    df.columns = required_cols
-                else:
-                    raise ValueError("CSV列数不足，无法强制修复")
+    # 兜底：自动匹配失败时，按位置强制映射
+    required = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
+    missing = [k for k in required if k not in matched or matched[k] is None]
+    if missing:
+        if len(num_df.columns) >= 6:
+            cols = list(num_df.columns)
+            # 从timestamp之后取6列映射
+            start_idx = 1 if len(cols) > 6 else 0
+            matched = {
+                "latitude": cols[start_idx],
+                "longitude": cols[start_idx+1],
+                "altitude": cols[start_idx+2],
+                "heading": cols[start_idx+3],
+                "pitch": cols[start_idx+4],
+                "roll": cols[start_idx+5]
+            }
+        else:
+            raise ValueError(f"列数不足，无法解析。当前列：{list(num_df.columns)}")
 
-    # --------------------------
-    # 3. 最终校验
-    # --------------------------
-    missing_final = [c for c in required_cols if c not in df.columns]
-    if missing_final:
-        raise ValueError(
-            f"缺少必填列：{missing_final}，"
-            f"当前列名：{list(df.columns)}，"
-            f"原始列名：{list(df_raw.columns)}"
-        )
+    # 构建标准数据表
+    std_df = pd.DataFrame()
+    std_df["latitude"] = num_df[matched["latitude"]]
+    std_df["longitude"] = num_df[matched["longitude"]]
+    std_df["altitude"] = num_df[matched["altitude"]]
+    std_df["heading"] = num_df[matched["heading"]]
+    std_df["pitch"] = num_df[matched["pitch"]]
+    std_df["roll"] = num_df[matched["roll"]] if matched["roll"] else 0.0
 
-    for col in required_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=required_cols).reset_index(drop=True)
-
-    if len(df) == 0:
+    # 清洗空值
+    std_df = std_df.dropna().reset_index(drop=True)
+    if len(std_df) == 0:
         raise ValueError("有效数据行为0")
 
-    # --------------------------
-    # 4. 调试信息：必须看这个
-    # --------------------------
-    st.subheader("🔍 解析诊断")
-    st.write(f"原始列名：{list(df_raw.columns)}")
-    st.write(f"修复后列名：{list(df.columns)}")
-    st.dataframe(df[required_cols].head(10), use_container_width=True)
+    # 调试输出
+    with st.expander("🔍 解析诊断详情", expanded=False):
+        st.write("原始列名：", list(df.columns))
+        st.write("自动匹配映射：", matched)
+        st.dataframe(std_df.head(10), use_container_width=True)
+        st.write(f"纬度范围：{std_df['latitude'].min():.4f} ~ {std_df['latitude'].max():.4f}")
+        st.write(f"经度范围：{std_df['longitude'].min():.4f} ~ {std_df['longitude'].max():.4f}")
+        st.write(f"高度范围：{std_df['altitude'].min():.2f} ~ {std_df['altitude'].max():.2f}")
+        st.write(f"航向范围：{std_df['heading'].min():.2f} ~ {std_df['heading'].max():.2f}")
+        st.write(f"俯仰范围：{std_df['pitch'].min():.2f} ~ {std_df['pitch'].max():.2f}")
+        st.write(f"滚转范围：{std_df['roll'].min():.2f} ~ {std_df['roll'].max():.2f}")
 
-    st.write("纬度范围：", df["latitude"].min(), "~", df["latitude"].max())
-    st.write("经度范围：", df["longitude"].min(), "~", df["longitude"].max())
-    st.write("高度范围：", df["altitude"].min(), "~", df["altitude"].max())
-    st.write("航向范围：", df["heading"].min(), "~", df["heading"].max())
-    st.write("俯仰范围：", df["pitch"].min(), "~", df["pitch"].max())
-    st.write("滚转范围：", df["roll"].min(), "~", df["roll"].max())
-
-    return df
+    return std_df
 
 # ===================== 侧边栏数据输入 =====================
 with st.sidebar:
@@ -116,7 +139,7 @@ with st.sidebar:
     input_mode = st.radio("选择数据输入方式", ["粘贴CSV文本", "上传CSV文件"])
     csv_text = st.text_area("粘贴CSV数据", height=280)
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"])
-    load_btn = st.button("加载数据")
+    load_btn = st.button("加载数据", use_container_width=True)
 
 frames_data = []
 if load_btn:
@@ -138,11 +161,6 @@ if load_btn:
         
         df = parse_csv_data(raw_text)
         
-        # ===== 调试输出：直观确认解析结果 =====
-        st.subheader("📊 解析结果校验")
-        st.caption(f"列名列表：{list(df.columns)}")
-        st.dataframe(df[["latitude", "longitude", "altitude", "heading", "pitch", "roll"]].head(3), use_container_width=True)
-        
         lat0 = df["latitude"].iloc[0]
         lon0 = df["longitude"].iloc[0]
         
@@ -156,7 +174,7 @@ if load_btn:
                 "pitch": float(row["pitch"]),
                 "roll": float(row["roll"])
             })
-        st.success(f"数据加载成功，共 {len(frames_data)} 帧")
+        st.success(f"✅ 数据加载成功，共 {len(frames_data)} 帧")
         st.caption(f"首帧姿态：航向 {frames_data[0]['heading']:.1f}° / 俯仰 {frames_data[0]['pitch']:.1f}° / 滚转 {frames_data[0]['roll']:.1f}°")
         
     except Exception as e:
@@ -164,7 +182,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 渲染3D动画组件 =====================
+# ===================== 3D渲染组件 =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -272,7 +290,7 @@ if len(frames_data) > 0:
                 return;
             }
 
-            // ========== 内置OrbitControls ==========
+            // ========== 内置轨道控制器 ==========
             THREE.OrbitControls = function ( object, domElement ) {
                 this.object = object;
                 this.domElement = domElement;
@@ -375,6 +393,7 @@ if len(frames_data) > 0:
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
             scene.add(gridHelper);
 
+            // 轨迹线
             const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
             const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
             const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({ color: 0x888888 }));
@@ -421,6 +440,7 @@ if len(frames_data) > 0:
             aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
             scene.add(aircraftGroup);
 
+            // 水平坐标系
             const horizonGroup = new THREE.Group();
             const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
             hAxis.material.opacity = 0.45;
@@ -587,7 +607,7 @@ if len(frames_data) > 0:
     html_template = html_template.replace("__TOTAL__", str(total - 1))
     html_template = html_template.replace("__TOTAL_PLUS_ONE__", str(total))
 
-    components.html(html_template, height=750, scrolling=False)
+    components.html(html_template, height=780, scrolling=False)
 
 else:
     st.info("👉 请在左侧侧边栏输入CSV数据，点击【加载数据】开始可视化")
