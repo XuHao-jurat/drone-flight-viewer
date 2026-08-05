@@ -20,31 +20,34 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== 统一CSV解析（含自动错位修复） =====================
+# ===================== 鲁棒CSV解析（自动修复列错位） =====================
 def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(csv_string))
-    # 1. 基础清洗：去除列名空格
     df.columns = df.columns.str.strip()
+    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
 
-    # 2. 自动修复：表头前导逗号导致的列错位
-    # 判断逻辑：首列列名为空，且timestamp列的值像纬度（在-90~90之间）
-    if len(df.columns) > 0 and df.columns[0] == '' and 'timestamp' in df.columns:
-        first_timestamp_val = pd.to_numeric(df['timestamp'].iloc[0], errors='coerce')
-        if not pd.isna(first_timestamp_val) and -90 < first_timestamp_val < 90:
-            # 列名整体左移一位，空列移到末尾
-            new_cols = list(df.columns[1:]) + ['_unused_col']
-            df.columns = new_cols
-            # 删除末尾的空列
-            df = df.drop(columns=['_unused_col'])
-            # 再次清洗列名
+    # ===== 核心修复：自动检测并修复前导空列导致的整体右移 =====
+    # 情况1：首列是Unnamed空列，且timestamp列的值是纬度数值（典型错位特征）
+    if len(df.columns) > 0 and str(df.columns[0]).startswith('Unnamed'):
+        # 检查第二列（原timestamp列）的值是不是纬度范围
+        second_col_vals = pd.to_numeric(df.iloc[:, 1], errors='coerce').dropna()
+        if len(second_col_vals) > 0 and -90 < second_col_vals.iloc[0] < 90:
+            # 整体左移一列：删除首列空列，列名自动对齐
+            df = df.iloc[:, 1:].copy()
             df.columns = df.columns.str.strip()
 
-    # 3. 强制数值转换
-    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"缺少必填列：{missing_cols}")
+    # 情况2：如果还是缺列，再尝试一次左移（兼容更极端的错位）
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing and len(df.columns) > len(required_cols):
+        df = df.iloc[:, 1:].copy()
+        df.columns = df.columns.str.strip()
+
+    # 最终校验
+    missing_final = [c for c in required_cols if c not in df.columns]
+    if missing_final:
+        raise ValueError(f"缺少必填列：{missing_final}，当前列名：{list(df.columns)}")
     
+    # 强制转数值+去空
     for col in required_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=required_cols).reset_index(drop=True)
@@ -80,6 +83,11 @@ if load_btn:
                 raw_text = file_bytes.decode('gbk')
         
         df = parse_csv_data(raw_text)
+        
+        # ===== 调试输出：直观确认解析结果 =====
+        st.subheader("📊 解析结果校验")
+        st.caption(f"列名列表：{list(df.columns)}")
+        st.dataframe(df[["latitude", "longitude", "altitude", "heading", "pitch", "roll"]].head(3), use_container_width=True)
         
         lat0 = df["latitude"].iloc[0]
         lon0 = df["longitude"].iloc[0]
