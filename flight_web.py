@@ -3,7 +3,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import json
-from io import StringIO
+from io import StringIO, BytesIO
 
 # ===================== 页面基础配置 =====================
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
@@ -76,11 +76,34 @@ with st.sidebar:
 frames_data = []
 if load_btn:
     try:
+        # 1. 读取CSV数据
         if input_mode == "粘贴CSV文本":
+            if not csv_text.strip():
+                st.error("请粘贴有效的CSV数据")
+                st.stop()
             df = pd.read_csv(StringIO(csv_text))
         else:
-            df = pd.read_csv(uploaded_file)
+            if uploaded_file is None:
+                st.error("请先选择要上传的CSV文件")
+                st.stop()
+            # 修复：用字节流读取上传文件，解决Streamlit文件读取兼容性问题
+            file_bytes = uploaded_file.getvalue()
+            df = pd.read_csv(BytesIO(file_bytes))
         
+        # 2. 校验必填列是否存在
+        required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            st.error(f"CSV文件缺少必填列：{missing_cols}，请检查文件格式")
+            st.stop()
+        
+        # 3. 去除空值行
+        df = df.dropna(subset=required_cols).reset_index(drop=True)
+        if len(df) == 0:
+            st.error("CSV文件有效数据行不足，清洗后无可用数据")
+            st.stop()
+        
+        # 4. 坐标转换与数据预处理
         lat0 = df["latitude"].iloc[0]
         lon0 = df["longitude"].iloc[0]
         
@@ -100,6 +123,8 @@ if load_btn:
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
     except Exception as e:
         st.error(f"数据解析失败：{str(e)}")
+        import traceback
+        st.error(f"详细错误栈：{traceback.format_exc()}")
 
 # ===================== 渲染3D动画组件 =====================
 if len(frames_data) > 0:
