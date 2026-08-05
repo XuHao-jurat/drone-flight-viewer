@@ -400,45 +400,45 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-              // 更新单帧姿态
-    function updateFrame() {
-        const frame = frames[currentFrame];
-        const pos = enu2three(frame.x, frame.y, frame.z);
+    // 更新单帧姿态
+function updateFrame() {
+    const frame = frames[currentFrame];
+    const pos = enu2three(frame.x, frame.y, frame.z);
 
-        aircraftGroup.position.copy(pos);
-        horizonGroup.position.copy(pos);
+    aircraftGroup.position.copy(pos);
+    horizonGroup.position.copy(pos);
 
-        const h = THREE.MathUtils.degToRad(90 - frame.heading);
-        const p = THREE.MathUtils.degToRad(frame.pitch);
-        const r = THREE.MathUtils.degToRad(frame.roll);
+    const h = THREE.MathUtils.degToRad(90 - frame.heading);
+    const p = THREE.MathUtils.degToRad(frame.pitch);
+    const r = THREE.MathUtils.degToRad(frame.roll);
 
-        // 航空标准内在旋转顺序：航向 → 俯仰 → 滚转
-        aircraftGroup.rotation.order = 'YZX';
-        // 航向：绕Y轴水平旋转，对齐正北基准
-        aircraftGroup.rotation.y = h;
-        // 俯仰：绕Z轴（机翼横轴），抬头为正
-        aircraftGroup.rotation.z = -p;
-        // 滚转：绕X轴（机身纵轴），右翼下沉为正
-        aircraftGroup.rotation.x = r;
+    // 航空标准内在旋转顺序：航向 → 俯仰 → 滚转
+    aircraftGroup.rotation.order = 'YZX';
+    // 航向：绕Y轴水平旋转，对齐正北基准（保持原公式不变）
+    aircraftGroup.rotation.y = h;
+    // 俯仰：去掉负号，修正抬头方向
+    aircraftGroup.rotation.z = p;
+    // 滚转：绕X轴（机身纵轴），右翼下沉为正（保持不变）
+    aircraftGroup.rotation.x = r;
 
-        // 水平基准：只同步航向，永远保持水平
-        horizonGroup.rotation.y = h;
+    // 水平基准：只同步航向，永远保持水平
+    horizonGroup.rotation.y = h;
 
-        // 更新已飞轨迹
-        const flownPts = allPoints.slice(0, currentFrame + 1);
-        flownLine.geometry.dispose();
-        flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
+    // 更新已飞轨迹
+    const flownPts = allPoints.slice(0, currentFrame + 1);
+    flownLine.geometry.dispose();
+    flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
-        if (followAircraft) {
-            controls.target.copy(pos);
-        }
-
-        hdgVal.textContent = frame.heading.toFixed(1);
-        pitVal.textContent = frame.pitch.toFixed(1);
-        rolVal.textContent = frame.roll.toFixed(1);
-        frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
-        frameSlider.value = currentFrame;
+    if (followAircraft) {
+        controls.target.copy(pos);
     }
+
+    hdgVal.textContent = frame.heading.toFixed(1);
+    pitVal.textContent = frame.pitch.toFixed(1);
+    rolVal.textContent = frame.roll.toFixed(1);
+    frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
+    frameSlider.value = currentFrame;
+}
     // 事件绑定
     playBtn.addEventListener('click', function() {
         if (currentFrame >= totalFrames - 1) {
