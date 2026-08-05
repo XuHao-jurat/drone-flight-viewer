@@ -400,7 +400,7 @@ if len(frames_data) > 0:
     let lastTime = null;
     const frameInterval = 100;
 
-             // 更新单帧姿态
+              // 更新单帧姿态
     function updateFrame() {
         const frame = frames[currentFrame];
         const pos = enu2three(frame.x, frame.y, frame.z);
@@ -408,8 +408,7 @@ if len(frames_data) > 0:
         aircraftGroup.position.copy(pos);
         horizonGroup.position.copy(pos);
 
-        // 修正航向旋转方向：匹配顺时针航向定义
-        const h = THREE.MathUtils.degToRad(frame.heading - 90);
+        const h = THREE.MathUtils.degToRad(90 - frame.heading);
         const p = THREE.MathUtils.degToRad(frame.pitch);
         const r = THREE.MathUtils.degToRad(frame.roll);
 
