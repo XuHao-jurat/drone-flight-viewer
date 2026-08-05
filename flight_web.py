@@ -297,44 +297,41 @@ if len(frames_data) > 0:
     );
     scene.add(flownLine);
 
-       // ========== 飞机模型：零姿态下机头沿+X，机翼沿Z展开，机身水平 ==========
+           // ========== 飞机模型：零姿态下机头沿+X，机翼沿Z展开，机身水平 ==========
     const aircraftGroup = new THREE.Group();
     const s = AIRCRAFT_SIZE / 150;
 
-    // 机身：圆柱默认沿Y轴，绕Y轴转90度躺平，沿X轴方向
-    const bodyGeo = new THREE.CylinderGeometry(3 * s, 4.5 * s, 100 * s, 10);
+    // 机身：沿X轴，机头在+X，机尾在-X
+    const bodyGeo = new THREE.BoxGeometry(100 * s, 6 * s, 6 * s);
     const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.rotation.y = Math.PI / 2;
-    body.position.x = 10 * s;
     aircraftGroup.add(body);
 
-    // 机头红色尖头：圆锥默认沿Y轴，绕Y轴转90度，尖朝+X
-    const noseGeo = new THREE.ConeGeometry(3 * s, 40 * s, 10);
+    // 机头红色标识：在+X最前端
+    const noseGeo = new THREE.BoxGeometry(20 * s, 8 * s, 8 * s);
     const noseMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
     const nose = new THREE.Mesh(noseGeo, noseMat);
-    nose.rotation.y = Math.PI / 2;
-    nose.position.x = 80 * s;
+    nose.position.x = 60 * s;
     aircraftGroup.add(nose);
 
-    // 主翼：BoxGeometry默认X/Y/Z，沿Z轴左右展开
-    const wingGeo = new THREE.BoxGeometry(15 * s, 2 * s, 120 * s);
+    // 主翼：沿Z轴左右展开，在机身中后段
+    const wingGeo = new THREE.BoxGeometry(20 * s, 3 * s, 130 * s);
     const wingMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const wing = new THREE.Mesh(wingGeo, wingMat);
     wing.position.x = -10 * s;
     aircraftGroup.add(wing);
 
-    // 水平尾翼：沿Z轴展开
-    const hTailGeo = new THREE.BoxGeometry(10 * s, 1.5 * s, 50 * s);
+    // 水平尾翼：沿Z轴展开，在机尾
+    const hTailGeo = new THREE.BoxGeometry(15 * s, 2 * s, 60 * s);
     const hTail = new THREE.Mesh(hTailGeo, wingMat);
-    hTail.position.x = -45 * s;
+    hTail.position.x = -50 * s;
     aircraftGroup.add(hTail);
 
-    // 垂直尾翼：沿Y轴向上
-    const vTailGeo = new THREE.BoxGeometry(2 * s, 30 * s, 10 * s);
+    // 垂直尾翼：沿Y轴向上，在机尾
+    const vTailGeo = new THREE.BoxGeometry(15 * s, 35 * s, 3 * s);
     const vTailMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
     const vTail = new THREE.Mesh(vTailGeo, vTailMat);
-    vTail.position.set(-45 * s, 15 * s, 0);
+    vTail.position.set(-50 * s, 17.5 * s, 0);
     aircraftGroup.add(vTail);
 
     // 机体坐标轴
