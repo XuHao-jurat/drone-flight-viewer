@@ -20,17 +20,11 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析（仅修复文件上传错位，姿态不动） =====================
+# ===================== CSV解析（仅修复文件列错位，姿态逻辑完全不动） =====================
 def parse_csv_data(csv_string):
-    # 仅修复：移除每行开头的前导逗号，解决文件上传列错位
     lines = csv_string.strip().splitlines()
-    cleaned = []
-    for line in lines:
-        line = line.strip()
-        if line.startswith(','):
-            line = line[1:]
-        cleaned.append(line)
-    fixed_csv = '\n'.join(cleaned)
+    cleaned_lines = [line.strip() for line in lines if line.strip()]
+    fixed_csv = '\n'.join(cleaned_lines)
 
     df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
@@ -42,8 +36,18 @@ def parse_csv_data(csv_string):
     
     for col in required_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
-    df = df.dropna(subset=required_cols).reset_index(drop=True)
     
+    # 自动检测并修复列错位：纬度值异常则列名左移对齐
+    first_lat = df["latitude"].dropna().iloc[0]
+    if abs(first_lat) > 90:
+        new_cols = list(df.columns[1:]) + ['_drop_col']
+        df.columns = new_cols
+        df = df.drop(columns=['_drop_col'])
+        df.columns = df.columns.str.strip()
+        for col in required_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df = df.dropna(subset=required_cols).reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("有效数据行为0")
     return df
@@ -97,7 +101,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染（完全恢复原始正确姿态逻辑） =====================
+# ===================== 3D渲染组件（完整未修改，和原始正常版本完全一致） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -308,12 +312,13 @@ if len(frames_data) > 0:
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
             scene.add(gridHelper);
 
-            // 轨迹线
+            // 完整轨迹线
             const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
             const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
             const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({ color: 0x888888 }));
             scene.add(fullLine);
 
+            // 已飞轨迹线
             const flownLine = new THREE.Line(
                 new THREE.BufferGeometry().setFromPoints([allPoints[0]]),
                 new THREE.LineBasicMaterial({ color: 0xff4444 })
@@ -355,7 +360,7 @@ if len(frames_data) > 0:
             aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
             scene.add(aircraftGroup);
 
-            // 水平坐标系
+            // 水平参考坐标系
             const horizonGroup = new THREE.Group();
             const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
             hAxis.material.opacity = 0.45;
@@ -422,7 +427,7 @@ if len(frames_data) > 0:
                 aircraftGroup.position.copy(pos);
                 horizonGroup.position.copy(pos);
 
-                // 完全恢复原始姿态计算，无任何符号修改
+                // 原始姿态计算，完全未修改
                 const h = THREE.MathUtils.degToRad(90 - frame.heading);
                 const p = THREE.MathUtils.degToRad(frame.pitch);
                 const r = THREE.MathUtils.degToRad(frame.roll);
