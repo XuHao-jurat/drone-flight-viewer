@@ -20,7 +20,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析（仅修复文件列错位，姿态逻辑完全不动） =====================
+# ===================== CSV解析 + 衍生量计算（仅用现有字段） =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -29,25 +29,45 @@ def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
 
-    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
-    missing_cols = [col for col in required_cols if col not in df.columns]
+    # 核心字段校验
+    core_cols = ["timestamp","latitude", "longitude", "altitude", "heading", "pitch", "roll",
+                 "ve", "vn", "vu", "vheading", "vpitch", "vroll"]
+    missing_cols = [col for col in core_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"缺少必填列：{missing_cols}，当前列名：{list(df.columns)}")
     
-    for col in required_cols:
+    # 转数值
+    for col in core_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # 自动检测并修复列错位：纬度值异常则列名左移对齐
+    # 自动检测并修复列错位
     first_lat = df["latitude"].dropna().iloc[0]
     if abs(first_lat) > 90:
         new_cols = list(df.columns[1:]) + ['_drop_col']
         df.columns = new_cols
         df = df.drop(columns=['_drop_col'])
         df.columns = df.columns.str.strip()
-        for col in required_cols:
+        for col in core_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    df = df.dropna(subset=required_cols).reset_index(drop=True)
+    # ========== 新增：基于现有数据计算衍生量 ==========
+    # 1. 合地速大小
+    df["vg"] = np.sqrt(df["ve"]**2 + df["vn"]**2 + df["vu"]**2)
+    # 2. 航迹角（实际飞行轨迹俯仰角，单位度）
+    df["gamma_deg"] = np.degrees(np.arctan2(df["vu"], np.sqrt(df["ve"]**2 + df["vn"]**2)))
+    # 3. 飞行状态判断 0=平飞 1=爬升 2=下降 3=转弯
+    df["flight_status"] = 0
+    # 转弯判定：偏航速率或滚转速率超过阈值
+    turn_mask = (abs(df["vheading"]) > 2) | (abs(df["vroll"]) > 2)
+    df.loc[turn_mask, "flight_status"] = 3
+    # 爬升/下降判定：垂直速度超过阈值且非转弯
+    climb_mask = (~turn_mask) & (df["vu"] > 0.5)
+    descend_mask = (~turn_mask) & (df["vu"] < -0.5)
+    df.loc[climb_mask, "flight_status"] = 1
+    df.loc[descend_mask, "flight_status"] = 2
+
+    # 去空值
+    df = df.dropna(subset=core_cols).reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("有效数据行为0")
     return df
@@ -89,9 +109,22 @@ if load_btn:
                 "x": float(e),
                 "y": float(n),
                 "z": float(u),
+                "timestamp": float(row["timestamp"]),
+                "lat": float(row["latitude"]),
+                "lon": float(row["longitude"]),
+                "alt": float(row["altitude"]),
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
-                "roll": float(row["roll"])
+                "roll": float(row["roll"]),
+                "ve": float(row["ve"]),
+                "vn": float(row["vn"]),
+                "vu": float(row["vu"]),
+                "vg": float(row["vg"]),
+                "gamma": float(row["gamma_deg"]),
+                "vheading": float(row["vheading"]),
+                "vpitch": float(row["vpitch"]),
+                "vroll": float(row["vroll"]),
+                "status": int(row["flight_status"])
             })
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
         st.caption(f"首帧姿态：航向 {frames_data[0]['heading']:.1f}° / 俯仰 {frames_data[0]['pitch']:.1f}° / 滚转 {frames_data[0]['roll']:.1f}°")
@@ -101,7 +134,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件（新增高度显示，原有逻辑完全保留） =====================
+# ===================== 3D渲染组件（姿态逻辑完全保留，新增面板、彩色轨迹、悬浮弹窗） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -146,9 +179,24 @@ if len(frames_data) > 0:
         button:hover { background:#3b7eea; }
         select, input[type=range] { padding:4px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; }
         .info-panel {
-            position:absolute; top:112px; right:20px; width:180px;
-            background:rgba(0,0,0,0.75); padding:15px; border-radius:8px;
-            font-size:14px; line-height:2; z-index:10;
+            position:absolute; top:112px; right:20px; width:220px;
+            background:rgba(0,0,0,0.8); padding:12px 15px; border-radius:8px;
+            font-size:13px; line-height:1.8; z-index:10;
+        }
+        .info-panel .title { font-weight:bold; margin-bottom:4px; color:#4ea1ff; border-bottom:1px solid #333; padding-bottom:2px; }
+        .info-panel .row { display:flex; justify-content:space-between; }
+        #tooltip {
+            position:absolute;
+            background:rgba(0,0,0,0.9);
+            color:#fff;
+            padding:10px 12px;
+            border-radius:6px;
+            font-size:12px;
+            line-height:1.7;
+            pointer-events:none;
+            z-index:20;
+            display:none;
+            min-width:180px;
         }
         #error-tip {
             position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
@@ -158,6 +206,7 @@ if len(frames_data) > 0:
             flex:1;
             width:100%; 
             min-height:0;
+            position:relative;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -193,13 +242,29 @@ if len(frames_data) > 0:
         </label>
     </div>
 
-    <div id="canvas-container"></div>
+    <div id="canvas-container">
+        <div class="info-panel">
+            <div class="title">飞行状态</div>
+            <div class="row"><span>高度 Altitude:</span><span id="altVal">0</span> m</div>
+            <div class="row"><span>合地速 Vg:</span><span id="vgVal">0</span> m/s</div>
+            <div class="row"><span>航迹角 γ:</span><span id="gammaVal">0</span> °</div>
+            
+            <div class="title" style="margin-top:8px;">姿态角度</div>
+            <div class="row"><span>航向 Heading:</span><span id="hdgVal">0</span> °</div>
+            <div class="row"><span>俯仰 Pitch:</span><span id="pitVal">0</span> °</div>
+            <div class="row"><span>滚转 Roll:</span><span id="rolVal">0</span> °</div>
 
-    <div class="info-panel">
-        <div>高度 Altitude: <span id="altVal">0</span> m</div>
-        <div>航向 Heading: <span id="hdgVal">0</span> °</div>
-        <div>俯仰 Pitch: <span id="pitVal">0</span> °</div>
-        <div>滚转 Roll: <span id="rolVal">0</span> °</div>
+            <div class="title" style="margin-top:8px;">姿态角速度</div>
+            <div class="row"><span>偏航速率:</span><span id="vhdgVal">0</span> °/s</div>
+            <div class="row"><span>俯仰速率:</span><span id="vpitVal">0</span> °/s</div>
+            <div class="row"><span>滚转速率:</span><span id="vrolVal">0</span> °/s</div>
+
+            <div class="title" style="margin-top:8px;">地速分量</div>
+            <div class="row"><span>东向 Ve:</span><span id="veVal">0</span> m/s</div>
+            <div class="row"><span>北向 Vn:</span><span id="vnVal">0</span> m/s</div>
+            <div class="row"><span>垂向 Vu:</span><span id="vuVal">0</span> m/s</div>
+        </div>
+        <div id="tooltip"></div>
     </div>
 
     <script>
@@ -290,11 +355,19 @@ if len(frames_data) > 0:
             const AIRCRAFT_AXIS_SIZE = 220;
             const HORIZON_AXIS_SIZE  = 250;
 
+            const statusColors = {
+                0: 0x888888, // 平飞-灰色
+                1: 0xff4444, // 爬升-红色
+                2: 0x4488ff, // 下降-蓝色
+                3: 0xffcc00  // 转弯-黄色
+            };
+
             function enu2three(x, y, z) {
                 return new THREE.Vector3(x, z, -y);
             }
 
             const container = document.getElementById('canvas-container');
+            const tooltip = document.getElementById('tooltip');
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x1a1d29);
 
@@ -313,20 +386,33 @@ if len(frames_data) > 0:
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
             scene.add(gridHelper);
 
-            // 完整轨迹线
+            // ========== 按飞行状态分段绘制彩色轨迹 ==========
             const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
-            const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
-            const fullLine = new THREE.Line(fullLineGeo, new THREE.LineBasicMaterial({ color: 0x888888 }));
-            scene.add(fullLine);
+            
+            let segStart = 0;
+            let currentStatus = frames[0].status;
+            for(let i=1; i<frames.length; i++){
+                if(frames[i].status !== currentStatus || i === frames.length - 1){
+                    const endIdx = i === frames.length-1 ? i : i-1;
+                    const segPoints = allPoints.slice(segStart, endIdx+1);
+                    const geo = new THREE.BufferGeometry().setFromPoints(segPoints);
+                    const mat = new THREE.LineBasicMaterial({ color: statusColors[currentStatus], linewidth: 2 });
+                    const line = new THREE.Line(geo, mat);
+                    line.userData.frameStart = segStart;
+                    line.userData.frameEnd = endIdx;
+                    scene.add(line);
+                    segStart = i;
+                    currentStatus = frames[i].status;
+                }
+            }
 
-            // 已飞轨迹线
-            const flownLine = new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints([allPoints[0]]),
-                new THREE.LineBasicMaterial({ color: 0xff4444 })
-            );
+            // 已飞轨迹高亮线
+            const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
+            const flownLineMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 3 });
+            const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
             scene.add(flownLine);
 
-            // ========== 飞机模型 ==========
+            // ========== 飞机模型（完全保留原始逻辑） ==========
             const aircraftGroup = new THREE.Group();
             const s = AIRCRAFT_SIZE / 150;
 
@@ -405,22 +491,35 @@ if len(frames_data) > 0:
                 controls.update();
             }
 
-            // 控件绑定
+            // ========== 控件绑定 ==========
             const playBtn = document.getElementById('playBtn');
             const speedSelect = document.getElementById('speedSelect');
             const frameSlider = document.getElementById('frameSlider');
             const viewSelect = document.getElementById('viewSelect');
             const frameText = document.getElementById('frameText');
+
             const altVal = document.getElementById('altVal');
+            const vgVal = document.getElementById('vgVal');
+            const gammaVal = document.getElementById('gammaVal');
             const hdgVal = document.getElementById('hdgVal');
             const pitVal = document.getElementById('pitVal');
             const rolVal = document.getElementById('rolVal');
+            const vhdgVal = document.getElementById('vhdgVal');
+            const vpitVal = document.getElementById('vpitVal');
+            const vrolVal = document.getElementById('vrolVal');
+            const veVal = document.getElementById('veVal');
+            const vnVal = document.getElementById('vnVal');
+            const vuVal = document.getElementById('vuVal');
 
             let currentFrame = 0;
             let isPlaying = false;
             let speed = 1;
             let lastTime = null;
             const frameInterval = 100;
+
+            // 射线检测用于悬浮弹窗
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
 
             function updateFrame() {
                 const frame = frames[currentFrame];
@@ -429,7 +528,7 @@ if len(frames_data) > 0:
                 aircraftGroup.position.copy(pos);
                 horizonGroup.position.copy(pos);
 
-                // 原始姿态计算，完全未修改
+                // 原始姿态计算 完全未修改
                 const h = THREE.MathUtils.degToRad(90 - frame.heading);
                 const p = THREE.MathUtils.degToRad(frame.pitch);
                 const r = THREE.MathUtils.degToRad(frame.roll);
@@ -441,6 +540,7 @@ if len(frames_data) > 0:
 
                 horizonGroup.rotation.y = h;
 
+                // 更新已飞轨迹
                 const flownPts = allPoints.slice(0, currentFrame + 1);
                 flownLine.geometry.dispose();
                 flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
@@ -449,14 +549,57 @@ if len(frames_data) > 0:
                     controls.target.copy(pos);
                 }
 
-                // 更新面板数值
-                altVal.textContent = frame.z.toFixed(1);
+                // 更新面板所有数值
+                altVal.textContent = frame.alt.toFixed(1);
+                vgVal.textContent = frame.vg.toFixed(2);
+                gammaVal.textContent = frame.gamma.toFixed(2);
                 hdgVal.textContent = frame.heading.toFixed(1);
                 pitVal.textContent = frame.pitch.toFixed(1);
                 rolVal.textContent = frame.roll.toFixed(1);
+                vhdgVal.textContent = frame.vheading.toFixed(2);
+                vpitVal.textContent = frame.vpitch.toFixed(2);
+                vrolVal.textContent = frame.vroll.toFixed(2);
+                veVal.textContent = frame.ve.toFixed(2);
+                vnVal.textContent = frame.vn.toFixed(2);
+                vuVal.textContent = frame.vu.toFixed(2);
+
                 frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
                 frameSlider.value = currentFrame;
             }
+
+            // 鼠标移动：射线检测轨迹，显示悬浮弹窗
+            function onMouseMoveTooltip(event) {
+                const rect = renderer.domElement.getBoundingClientRect();
+                mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+                mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(scene.children.filter(obj => obj.isLine && obj !== flownLine));
+
+                if(intersects.length > 0){
+                    const line = intersects[0].object;
+                    const idx = line.userData.frameStart + Math.round(intersects[0].index / 3);
+                    const f = frames[Math.min(Math.max(idx, 0), totalFrames-1)];
+                    
+                    const statusText = ["平飞","爬升","下降","转弯"][f.status];
+                    tooltip.innerHTML = `
+                        <b>第 ${idx+1} 帧</b><br>
+                        时间戳: ${f.timestamp}<br>
+                        经纬度: ${f.lat.toFixed(6)}, ${f.lon.toFixed(6)}<br>
+                        高度: ${f.alt.toFixed(1)} m<br>
+                        航向/俯仰/滚转: ${f.heading.toFixed(1)}° / ${f.pitch.toFixed(1)}° / ${f.roll.toFixed(1)}°<br>
+                        合地速: ${f.vg.toFixed(2)} m/s<br>
+                        航迹角: ${f.gamma.toFixed(2)}°<br>
+                        飞行状态: ${statusText}
+                    `;
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
+                    tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
+                } else {
+                    tooltip.style.display = 'none';
+                }
+            }
+            renderer.domElement.addEventListener('mousemove', onMouseMoveTooltip);
 
             playBtn.addEventListener('click', function() {
                 if (currentFrame >= totalFrames - 1) currentFrame = 0;
