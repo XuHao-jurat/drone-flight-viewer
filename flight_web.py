@@ -20,7 +20,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析 + 衍生量计算（字段容错版） =====================
+# ===================== CSV解析 + 衍生量计算（修正错位方向） =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -29,13 +29,13 @@ def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
 
-    # 核心必填字段（错位修复后一定存在）
+    # 核心必填字段
     required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"缺少核心必填列：{missing_cols}，当前列名：{list(df.columns)}")
     
-    # 可选字段（不存在则自动补默认值）
+    # 可选字段（不存在则补0）
     optional_cols = {
         "timestamp": 0,
         "ve": 0.0,
@@ -54,15 +54,13 @@ def parse_csv_data(csv_string):
     for col in all_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
     
-    # 自动检测并修复列错位（核心逻辑完全保留，和验收版本一致）
+    # 修正后的错位修复：删除开头冗余列，不丢失尾部速度/角速度字段
     first_lat = df["latitude"].dropna().iloc[0]
     if abs(first_lat) > 90:
-        # 列名左移对齐，丢弃最后一列冗余数据
-        new_cols = list(df.columns[1:]) + ['_drop_col']
-        df.columns = new_cols
-        df = df.drop(columns=['_drop_col'])
+        # 数据整体右移一位，删除第一列冗余数据，列名自动对齐
+        df = df.iloc[:, 1:].reset_index(drop=True)
         df.columns = df.columns.str.strip()
-        # 修复后重新给缺失的可选字段补默认值
+        # 重新补全缺失的可选字段
         for col, default in optional_cols.items():
             if col not in df.columns:
                 df[col] = default
@@ -70,26 +68,21 @@ def parse_csv_data(csv_string):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
 
-    # ========== 衍生量计算（全部基于现有字段） ==========
-    # 1. 合地速大小
+    # ========== 衍生量计算 ==========
     df["vg"] = np.sqrt(df["ve"]**2 + df["vn"]**2 + df["vu"]**2)
-    # 2. 航迹角（实际飞行轨迹俯仰角）
     df["gamma_deg"] = np.degrees(np.arctan2(df["vu"], np.sqrt(df["ve"]**2 + df["vn"]**2)))
-    # 3. 飞行状态：0=平飞 1=爬升 2=下降 3=转弯
+    # 飞行状态：0平飞 1爬升 2下降 3转弯
     df["flight_status"] = 0
-    # 转弯判定：偏航速率或滚转速率超过阈值
     turn_mask = (abs(df["vheading"]) > 2) | (abs(df["vroll"]) > 2)
     df.loc[turn_mask, "flight_status"] = 3
-    # 爬升/下降判定
     climb_mask = (~turn_mask) & (df["vu"] > 0.5)
     descend_mask = (~turn_mask) & (df["vu"] < -0.5)
     df.loc[climb_mask, "flight_status"] = 1
     df.loc[descend_mask, "flight_status"] = 2
-    # 时间戳容错：如果还是无效值，用行号模拟
+    # 时间戳容错
     if df["timestamp"].iloc[0] == 0 or abs(df["timestamp"].iloc[0]) < 1e9:
         df["timestamp"] = np.arange(len(df)) * 1000
 
-    # 去空值
     df = df.dropna(subset=required_cols).reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("有效数据行为0")
@@ -298,7 +291,7 @@ if len(frames_data) > 0:
                 return;
             }
 
-            // ========== 内置轨道控制器 ==========
+            // ========== 轨道控制器 ==========
             THREE.OrbitControls = function ( object, domElement ) {
                 this.object = object;
                 this.domElement = domElement;
@@ -590,7 +583,7 @@ if len(frames_data) > 0:
                 frameSlider.value = currentFrame;
             }
 
-            // 鼠标移动：射线检测轨迹，显示悬浮弹窗
+            // 鼠标移动悬浮弹窗
             function onMouseMoveTooltip(event) {
                 const rect = renderer.domElement.getBoundingClientRect();
                 mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
