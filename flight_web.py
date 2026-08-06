@@ -20,9 +20,8 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== 鲁棒CSV解析（优先列名+自动错位修复） =====================
+# ===================== 鲁棒CSV解析（修复列数不一致+自动错位修复） =====================
 def parse_csv_data(csv_string):
-    # 标准列名顺序
     standard_cols = [
         "timestamp", "latitude", "longitude", "altitude",
         "heading", "pitch", "roll",
@@ -31,58 +30,66 @@ def parse_csv_data(csv_string):
     ]
     required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
 
-    # 第一步：原始读取
-    df_raw = pd.read_csv(StringIO(csv_string), header=None)  # 先不指定表头，统一处理
+    # ========== 第一步：逐行清洗，解决前导逗号导致的列数不一致 ==========
+    lines = csv_string.strip().splitlines()
+    cleaned_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # 去掉行首的前导逗号
+        if line.startswith(','):
+            line = line[1:]
+        cleaned_lines.append(line)
+    cleaned_csv = '\n'.join(cleaned_lines)
 
-    # 判断第一行是不是表头：如果第一行包含latitude/longitude等关键字，就是表头
-    first_row = [str(x).strip().lower() for x in df_raw.iloc[0].tolist()]
-    has_header = any(kw in first_row for kw in ["latitude", "longitude", "heading", "altitude"])
+    # ========== 第二步：判断是否有表头 ==========
+    first_line = cleaned_lines[0].lower()
+    has_header = any(kw in first_line for kw in ["latitude", "longitude", "heading", "altitude"])
 
     if has_header:
-        # 有表头：用第一行当列名，数据从第二行开始
-        df_raw.columns = [str(x).strip() for x in df_raw.iloc[0].tolist()]
-        df = df_raw.iloc[1:].reset_index(drop=True)
+        # 有表头：正常读取
+        df = pd.read_csv(StringIO(cleaned_csv))
     else:
-        # 无表头：自动注入标准列名
-        if len(df_raw.columns) >= len(standard_cols):
-            df = df_raw.copy()
-            df.columns = standard_cols[:len(df_raw.columns)]
-        else:
-            raise ValueError(f"数据列数不足，至少需要6列，当前只有{len(df_raw.columns)}列")
+        # 无表头：注入标准列名
+        col_count = len(cleaned_lines[0].split(','))
+        use_cols = standard_cols[:col_count] if col_count <= len(standard_cols) else standard_cols + [f"col_{i}" for i in range(col_count - len(standard_cols))]
+        df = pd.read_csv(StringIO(cleaned_csv), header=None, names=use_cols)
 
-    # 第二步：检测并修复数据错位（核心）
-    # 判断方法：latitude列的值如果不在-90~90之间，说明数据整体右移了一位
+    # 统一清洗列名
+    df.columns = df.columns.str.strip()
+
+    # ========== 第三步：检测并修复数据错位 ==========
     if "latitude" in df.columns:
         sample_val = pd.to_numeric(df["latitude"].iloc[0], errors="coerce")
+        # 纬度不在-90~90之间，说明数据整体右移
         if not pd.isna(sample_val) and abs(sample_val) > 90:
-            # 数据右移，整体左移一列：删除第一列，列名保持不变
             df = df.iloc[:, 1:].copy()
             # 重新对齐列名
             new_cols = list(df.columns[:-1]) + ["_drop_col"]
             df.columns = new_cols
             df = df.drop(columns=["_drop_col"])
+            df.columns = df.columns.str.strip()
 
-    # 第三步：强制转数值
+    # ========== 第四步：强制转数值+清洗 ==========
     for col in required_cols:
         if col not in df.columns:
             raise ValueError(f"缺少必填列：{col}，当前列名：{list(df.columns)}")
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 第四步：清洗空值
     df = df.dropna(subset=required_cols).reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("有效数据行为0")
 
-    # 第五步：二次校验（防止极端错位）
+    # 二次兜底校验
     lat_sample = df["latitude"].iloc[0]
-    if abs(lat_sample) > 90:
-        # 如果还是不对，再左移一次
+    if abs(lat_sample) > 90 and len(df.columns) > len(required_cols):
         df = df.iloc[:, 1:].copy()
         for i, col in enumerate(required_cols):
             df[col] = pd.to_numeric(df.iloc[:, i], errors="coerce")
         df = df.dropna(subset=required_cols).reset_index(drop=True)
 
-    # 调试输出
+    # ========== 调试输出 ==========
     with st.expander("🔍 解析诊断详情", expanded=False):
         st.write("当前列名：", list(df.columns))
         st.write(f"是否检测到表头：{has_header}")
@@ -472,7 +479,7 @@ if len(frames_data) > 0:
 
                 // 修正后的姿态转换
                 const headingRad = THREE.MathUtils.degToRad(90 - frame.heading);
-                const pitchRad = THREE.MathUtils.degToRad(-frame.pitch); // 俯仰符号取反
+                const pitchRad = THREE.MathUtils.degToRad(-frame.pitch);
                 const rollRad = THREE.MathUtils.degToRad(frame.roll);
 
                 aircraftGroup.rotation.order = 'YZX';
