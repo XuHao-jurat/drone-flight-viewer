@@ -101,7 +101,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件（完整未修改，和原始正常版本完全一致） =====================
+# ===================== 3D渲染组件（新增高度显示，原有逻辑完全保留） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -196,6 +196,7 @@ if len(frames_data) > 0:
     <div id="canvas-container"></div>
 
     <div class="info-panel">
+        <div>高度 Altitude: <span id="altVal">0</span> m</div>
         <div>航向 Heading: <span id="hdgVal">0</span> °</div>
         <div>俯仰 Pitch: <span id="pitVal">0</span> °</div>
         <div>滚转 Roll: <span id="rolVal">0</span> °</div>
@@ -410,6 +411,7 @@ if len(frames_data) > 0:
             const frameSlider = document.getElementById('frameSlider');
             const viewSelect = document.getElementById('viewSelect');
             const frameText = document.getElementById('frameText');
+            const altVal = document.getElementById('altVal');
             const hdgVal = document.getElementById('hdgVal');
             const pitVal = document.getElementById('pitVal');
             const rolVal = document.getElementById('rolVal');
@@ -447,6 +449,8 @@ if len(frames_data) > 0:
                     controls.target.copy(pos);
                 }
 
+                // 更新面板数值
+                altVal.textContent = frame.z.toFixed(1);
                 hdgVal.textContent = frame.heading.toFixed(1);
                 pitVal.textContent = frame.pitch.toFixed(1);
                 rolVal.textContent = frame.roll.toFixed(1);
