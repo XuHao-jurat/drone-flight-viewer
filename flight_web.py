@@ -20,8 +20,9 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析 + 衍生量计算（修正错位方向） =====================
+# ===================== CSV解析（修正错位方向，字段完整对齐） =====================
 def parse_csv_data(csv_string):
+    # 逐行去前导逗号，解决列数不一致
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
     fixed_csv = '\n'.join(cleaned_lines)
@@ -35,7 +36,7 @@ def parse_csv_data(csv_string):
     if missing_cols:
         raise ValueError(f"缺少核心必填列：{missing_cols}，当前列名：{list(df.columns)}")
     
-    # 可选字段（不存在则补0）
+    # 可选字段补默认值
     optional_cols = {
         "timestamp": 0,
         "ve": 0.0,
@@ -54,13 +55,13 @@ def parse_csv_data(csv_string):
     for col in all_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
     
-    # 修正后的错位修复：删除开头冗余列，不丢失尾部速度/角速度字段
+    # ========== 修正错位：删除开头冗余列，不丢尾部字段 ==========
     first_lat = df["latitude"].dropna().iloc[0]
     if abs(first_lat) > 90:
-        # 数据整体右移一位，删除第一列冗余数据，列名自动对齐
+        # 删除第一列空列，列名自动左移对齐数据，尾部字段完整保留
         df = df.iloc[:, 1:].reset_index(drop=True)
         df.columns = df.columns.str.strip()
-        # 重新补全缺失的可选字段
+        # 补全缺失的可选字段
         for col, default in optional_cols.items():
             if col not in df.columns:
                 df[col] = default
@@ -150,7 +151,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件（姿态逻辑完全未改动） =====================
+# ===================== 3D渲染（姿态逻辑完全未改动，和验收版本一致） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -533,7 +534,7 @@ if len(frames_data) > 0:
             let lastTime = null;
             const frameInterval = 100;
 
-            // 射线检测用于悬浮弹窗
+            // 射线检测悬浮弹窗
             const raycaster = new THREE.Raycaster();
             const mouse = new THREE.Vector2();
 
@@ -565,7 +566,7 @@ if len(frames_data) > 0:
                     controls.target.copy(pos);
                 }
 
-                // 更新面板所有数值
+                // 更新面板数值
                 altVal.textContent = frame.alt.toFixed(1);
                 vgVal.textContent = frame.vg.toFixed(2);
                 gammaVal.textContent = frame.gamma.toFixed(2);
@@ -583,7 +584,7 @@ if len(frames_data) > 0:
                 frameSlider.value = currentFrame;
             }
 
-            // 鼠标移动悬浮弹窗
+            // 鼠标悬浮轨迹弹窗
             function onMouseMoveTooltip(event) {
                 const rect = renderer.domElement.getBoundingClientRect();
                 mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
