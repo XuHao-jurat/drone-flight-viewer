@@ -20,7 +20,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析 + 衍生量计算（仅用现有字段） =====================
+# ===================== CSV解析 + 衍生量计算（字段容错版） =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -29,45 +29,68 @@ def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
 
-    # 核心字段校验
-    core_cols = ["timestamp","latitude", "longitude", "altitude", "heading", "pitch", "roll",
-                 "ve", "vn", "vu", "vheading", "vpitch", "vroll"]
-    missing_cols = [col for col in core_cols if col not in df.columns]
+    # 核心必填字段（错位修复后一定存在）
+    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
-        raise ValueError(f"缺少必填列：{missing_cols}，当前列名：{list(df.columns)}")
+        raise ValueError(f"缺少核心必填列：{missing_cols}，当前列名：{list(df.columns)}")
     
-    # 转数值
-    for col in core_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # 可选字段（不存在则自动补默认值）
+    optional_cols = {
+        "timestamp": 0,
+        "ve": 0.0,
+        "vn": 0.0,
+        "vu": 0.0,
+        "vheading": 0.0,
+        "vpitch": 0.0,
+        "vroll": 0.0
+    }
+    for col, default in optional_cols.items():
+        if col not in df.columns:
+            df[col] = default
     
-    # 自动检测并修复列错位
+    # 统一转数值
+    all_cols = required_cols + list(optional_cols.keys())
+    for col in all_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
+    
+    # 自动检测并修复列错位（核心逻辑完全保留，和验收版本一致）
     first_lat = df["latitude"].dropna().iloc[0]
     if abs(first_lat) > 90:
+        # 列名左移对齐，丢弃最后一列冗余数据
         new_cols = list(df.columns[1:]) + ['_drop_col']
         df.columns = new_cols
         df = df.drop(columns=['_drop_col'])
         df.columns = df.columns.str.strip()
-        for col in core_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # 修复后重新给缺失的可选字段补默认值
+        for col, default in optional_cols.items():
+            if col not in df.columns:
+                df[col] = default
+        for col in all_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
 
-    # ========== 新增：基于现有数据计算衍生量 ==========
+    # ========== 衍生量计算（全部基于现有字段） ==========
     # 1. 合地速大小
     df["vg"] = np.sqrt(df["ve"]**2 + df["vn"]**2 + df["vu"]**2)
-    # 2. 航迹角（实际飞行轨迹俯仰角，单位度）
+    # 2. 航迹角（实际飞行轨迹俯仰角）
     df["gamma_deg"] = np.degrees(np.arctan2(df["vu"], np.sqrt(df["ve"]**2 + df["vn"]**2)))
-    # 3. 飞行状态判断 0=平飞 1=爬升 2=下降 3=转弯
+    # 3. 飞行状态：0=平飞 1=爬升 2=下降 3=转弯
     df["flight_status"] = 0
     # 转弯判定：偏航速率或滚转速率超过阈值
     turn_mask = (abs(df["vheading"]) > 2) | (abs(df["vroll"]) > 2)
     df.loc[turn_mask, "flight_status"] = 3
-    # 爬升/下降判定：垂直速度超过阈值且非转弯
+    # 爬升/下降判定
     climb_mask = (~turn_mask) & (df["vu"] > 0.5)
     descend_mask = (~turn_mask) & (df["vu"] < -0.5)
     df.loc[climb_mask, "flight_status"] = 1
     df.loc[descend_mask, "flight_status"] = 2
+    # 时间戳容错：如果还是无效值，用行号模拟
+    if df["timestamp"].iloc[0] == 0 or abs(df["timestamp"].iloc[0]) < 1e9:
+        df["timestamp"] = np.arange(len(df)) * 1000
 
     # 去空值
-    df = df.dropna(subset=core_cols).reset_index(drop=True)
+    df = df.dropna(subset=required_cols).reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("有效数据行为0")
     return df
@@ -134,7 +157,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件（姿态逻辑完全保留，新增面板、彩色轨迹、悬浮弹窗） =====================
+# ===================== 3D渲染组件（姿态逻辑完全未改动） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -356,10 +379,10 @@ if len(frames_data) > 0:
             const HORIZON_AXIS_SIZE  = 250;
 
             const statusColors = {
-                0: 0x888888, // 平飞-灰色
-                1: 0xff4444, // 爬升-红色
-                2: 0x4488ff, // 下降-蓝色
-                3: 0xffcc00  // 转弯-黄色
+                0: 0x888888,
+                1: 0xff4444,
+                2: 0x4488ff,
+                3: 0xffcc00
             };
 
             function enu2three(x, y, z) {
@@ -386,7 +409,7 @@ if len(frames_data) > 0:
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
             scene.add(gridHelper);
 
-            // ========== 按飞行状态分段绘制彩色轨迹 ==========
+            // 分段彩色轨迹
             const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
             
             let segStart = 0;
@@ -406,13 +429,13 @@ if len(frames_data) > 0:
                 }
             }
 
-            // 已飞轨迹高亮线
+            // 已飞高亮轨迹
             const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
             const flownLineMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 3 });
             const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
             scene.add(flownLine);
 
-            // ========== 飞机模型（完全保留原始逻辑） ==========
+            // ========== 飞机模型（原始姿态逻辑完全保留） ==========
             const aircraftGroup = new THREE.Group();
             const s = AIRCRAFT_SIZE / 150;
 
