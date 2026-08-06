@@ -20,7 +20,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析（仅修复文件上传错位，无额外扩展） =====================
+# ===================== CSV解析（稳定版，完全未改动） =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -101,7 +101,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染（原始姿态逻辑完全保留，仅新增高度显示） =====================
+# ===================== 3D渲染（新增坐标系开关，核心逻辑完全不动） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -136,11 +136,22 @@ if len(frames_data) > 0:
             height:42px; 
             display:flex; 
             align-items:center; 
-            gap:15px;
+            gap:20px;
             padding:0 20px; 
             background:#14161b; 
             border-bottom:1px solid #333;
             flex-shrink:0;
+        }
+        .extra-bar label {
+            display:flex;
+            align-items:center;
+            gap:5px;
+            font-size:13px;
+            cursor:pointer;
+        }
+        .extra-bar input[type="checkbox"] {
+            cursor:pointer;
+            accent-color: #2d6cdf;
         }
         button { padding:6px 16px; cursor:pointer; background:#2d6cdf; border:none; color:#fff; border-radius:4px; }
         button:hover { background:#3b7eea; }
@@ -158,6 +169,7 @@ if len(frames_data) > 0:
             flex:1;
             width:100%; 
             min-height:0;
+            position:relative;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -191,6 +203,8 @@ if len(frames_data) > 0:
                 <option value="follow">跟随飞机视角</option>
             </select>
         </label>
+        <label><input type="checkbox" id="showAircraftAxis" checked> 机体坐标系</label>
+        <label><input type="checkbox" id="showHorizonAxis" checked> 水平参考系</label>
     </div>
 
     <div id="canvas-container">
@@ -358,7 +372,9 @@ if len(frames_data) > 0:
             vTail.position.set(-50 * s, 17.5 * s, 0);
             aircraftGroup.add(vTail);
 
-            aircraftGroup.add(new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE));
+            // 机体坐标系
+            const aircraftAxis = new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE);
+            aircraftGroup.add(aircraftAxis);
             scene.add(aircraftGroup);
 
             // 水平参考坐标系
@@ -415,6 +431,16 @@ if len(frames_data) > 0:
             const hdgVal = document.getElementById('hdgVal');
             const pitVal = document.getElementById('pitVal');
             const rolVal = document.getElementById('rolVal');
+
+            // 坐标系开关
+            const showAircraftAxis = document.getElementById('showAircraftAxis');
+            const showHorizonAxis = document.getElementById('showHorizonAxis');
+            showAircraftAxis.addEventListener('change', e => {
+                aircraftAxis.visible = e.target.checked;
+            });
+            showHorizonAxis.addEventListener('change', e => {
+                horizonGroup.visible = e.target.checked;
+            });
 
             let currentFrame = 0;
             let isPlaying = false;
