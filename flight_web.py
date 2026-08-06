@@ -20,88 +20,33 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== 鲁棒CSV解析（修复列数不一致+自动错位修复） =====================
+# ===================== CSV解析（仅修复文件上传错位，姿态不动） =====================
 def parse_csv_data(csv_string):
-    standard_cols = [
-        "timestamp", "latitude", "longitude", "altitude",
-        "heading", "pitch", "roll",
-        "ve", "vn", "vu", "ae", "an", "au",
-        "vheading", "vpitch", "vroll"
-    ]
-    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
-
-    # ========== 第一步：逐行清洗，解决前导逗号导致的列数不一致 ==========
+    # 仅修复：移除每行开头的前导逗号，解决文件上传列错位
     lines = csv_string.strip().splitlines()
-    cleaned_lines = []
+    cleaned = []
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
-        # 去掉行首的前导逗号
         if line.startswith(','):
             line = line[1:]
-        cleaned_lines.append(line)
-    cleaned_csv = '\n'.join(cleaned_lines)
+        cleaned.append(line)
+    fixed_csv = '\n'.join(cleaned)
 
-    # ========== 第二步：判断是否有表头 ==========
-    first_line = cleaned_lines[0].lower()
-    has_header = any(kw in first_line for kw in ["latitude", "longitude", "heading", "altitude"])
-
-    if has_header:
-        # 有表头：正常读取
-        df = pd.read_csv(StringIO(cleaned_csv))
-    else:
-        # 无表头：注入标准列名
-        col_count = len(cleaned_lines[0].split(','))
-        use_cols = standard_cols[:col_count] if col_count <= len(standard_cols) else standard_cols + [f"col_{i}" for i in range(col_count - len(standard_cols))]
-        df = pd.read_csv(StringIO(cleaned_csv), header=None, names=use_cols)
-
-    # 统一清洗列名
+    df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
 
-    # ========== 第三步：检测并修复数据错位 ==========
-    if "latitude" in df.columns:
-        sample_val = pd.to_numeric(df["latitude"].iloc[0], errors="coerce")
-        # 纬度不在-90~90之间，说明数据整体右移
-        if not pd.isna(sample_val) and abs(sample_val) > 90:
-            df = df.iloc[:, 1:].copy()
-            # 重新对齐列名
-            new_cols = list(df.columns[:-1]) + ["_drop_col"]
-            df.columns = new_cols
-            df = df.drop(columns=["_drop_col"])
-            df.columns = df.columns.str.strip()
-
-    # ========== 第四步：强制转数值+清洗 ==========
+    required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"缺少必填列：{missing_cols}，当前列名：{list(df.columns)}")
+    
     for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"缺少必填列：{col}，当前列名：{list(df.columns)}")
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=required_cols).reset_index(drop=True)
+    
     if len(df) == 0:
         raise ValueError("有效数据行为0")
-
-    # 二次兜底校验
-    lat_sample = df["latitude"].iloc[0]
-    if abs(lat_sample) > 90 and len(df.columns) > len(required_cols):
-        df = df.iloc[:, 1:].copy()
-        for i, col in enumerate(required_cols):
-            df[col] = pd.to_numeric(df.iloc[:, i], errors="coerce")
-        df = df.dropna(subset=required_cols).reset_index(drop=True)
-
-    # ========== 调试输出 ==========
-    with st.expander("🔍 解析诊断详情", expanded=False):
-        st.write("当前列名：", list(df.columns))
-        st.write(f"是否检测到表头：{has_header}")
-        st.dataframe(df[required_cols].head(10), use_container_width=True)
-        st.write(f"纬度范围：{df['latitude'].min():.6f} ~ {df['latitude'].max():.6f}")
-        st.write(f"经度范围：{df['longitude'].min():.6f} ~ {df['longitude'].max():.6f}")
-        st.write(f"高度范围：{df['altitude'].min():.2f} ~ {df['altitude'].max():.2f}")
-        st.write(f"航向范围：{df['heading'].min():.2f} ~ {df['heading'].max():.2f}")
-        st.write(f"俯仰范围：{df['pitch'].min():.2f} ~ {df['pitch'].max():.2f}")
-        st.write(f"滚转范围：{df['roll'].min():.2f} ~ {df['roll'].max():.2f}")
-
-    return df[required_cols]
+    return df
 
 # ===================== 侧边栏数据输入 =====================
 with st.sidebar:
@@ -144,7 +89,7 @@ if load_btn:
                 "pitch": float(row["pitch"]),
                 "roll": float(row["roll"])
             })
-        st.success(f"✅ 数据加载成功，共 {len(frames_data)} 帧")
+        st.success(f"数据加载成功，共 {len(frames_data)} 帧")
         st.caption(f"首帧姿态：航向 {frames_data[0]['heading']:.1f}° / 俯仰 {frames_data[0]['pitch']:.1f}° / 滚转 {frames_data[0]['roll']:.1f}°")
         
     except Exception as e:
@@ -152,7 +97,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件 =====================
+# ===================== 3D渲染（完全恢复原始正确姿态逻辑） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -477,17 +422,17 @@ if len(frames_data) > 0:
                 aircraftGroup.position.copy(pos);
                 horizonGroup.position.copy(pos);
 
-                // 修正后的姿态转换
-                const headingRad = THREE.MathUtils.degToRad(90 - frame.heading);
-                const pitchRad = THREE.MathUtils.degToRad(-frame.pitch);
-                const rollRad = THREE.MathUtils.degToRad(frame.roll);
+                // 完全恢复原始姿态计算，无任何符号修改
+                const h = THREE.MathUtils.degToRad(90 - frame.heading);
+                const p = THREE.MathUtils.degToRad(frame.pitch);
+                const r = THREE.MathUtils.degToRad(frame.roll);
 
                 aircraftGroup.rotation.order = 'YZX';
-                aircraftGroup.rotation.y = headingRad;
-                aircraftGroup.rotation.z = pitchRad;
-                aircraftGroup.rotation.x = rollRad;
+                aircraftGroup.rotation.y = h;
+                aircraftGroup.rotation.z = p;
+                aircraftGroup.rotation.x = r;
 
-                horizonGroup.rotation.y = headingRad;
+                horizonGroup.rotation.y = h;
 
                 const flownPts = allPoints.slice(0, currentFrame + 1);
                 flownLine.geometry.dispose();
