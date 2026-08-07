@@ -24,7 +24,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析 =====================
+# ===================== CSV解析（稳定版，完全未改动） =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -130,7 +130,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件 =====================
+# ===================== 3D渲染组件（回退稳定版，无第一人称） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -245,7 +245,6 @@ if len(frames_data) > 0:
                 <option value="side">侧视图</option>
                 <option value="front">前视图</option>
                 <option value="follow">跟随飞机视角</option>
-                <option value="firstPerson">第一人称驾驶</option>
             </select>
         </label>
         <label><input type="checkbox" id="showAircraftAxis" checked> 机体坐标系</label>
@@ -292,7 +291,6 @@ if len(frames_data) > 0:
                 this.object = object;
                 this.domElement = domElement;
                 this.target = new THREE.Vector3();
-                this.enabled = true;
                 this.enableDamping = true;
                 this.dampingFactor = 0.05;
                 this.rotateSpeed = 0.35;
@@ -308,13 +306,12 @@ if len(frames_data) > 0:
                 var previousMousePosition = { x: 0, y: 0 };
 
                 function onMouseDown( event ) {
-                    if (!scope.enabled) return;
                     isDragging = true;
                     previousMousePosition.x = event.clientX;
                     previousMousePosition.y = event.clientY;
                 }
                 function onMouseMove( event ) {
-                    if ( !isDragging || !scope.enabled ) return;
+                    if ( !isDragging ) return;
                     var deltaX = event.clientX - previousMousePosition.x;
                     var deltaY = event.clientY - previousMousePosition.y;
                     sphericalDelta.theta -= deltaX * 0.01 * scope.rotateSpeed;
@@ -324,7 +321,6 @@ if len(frames_data) > 0:
                 }
                 function onMouseUp() { isDragging = false; }
                 function onMouseWheel( event ) {
-                    if (!scope.enabled) return;
                     event.preventDefault();
                     if ( event.deltaY < 0 ) {
                         scale /= Math.pow( 0.95, scope.zoomSpeed );
@@ -462,48 +458,38 @@ if len(frames_data) > 0:
 
             let currentView = 'free';
             let followAircraft = false;
-            let isFirstPerson = false;
 
             function setCameraView(viewName) {
                 currentView = viewName;
                 followAircraft = (viewName === 'follow');
-                isFirstPerson = (viewName === 'firstPerson');
-
-                // 非第一人称：恢复轨道控制器
-                if (!isFirstPerson) {
-                    controls.enabled = true;
-                    switch (viewName) {
-                        case 'top':
-                            camera.position.set(center.x, maxDim * 2.5, center.z);
-                            camera.lookAt(center);
-                            controls.target.copy(center);
-                            break;
-                        case 'side':
-                            camera.position.set(center.x + maxDim * 2, center.y, center.z);
-                            camera.lookAt(center);
-                            controls.target.copy(center);
-                            break;
-                        case 'front':
-                            camera.position.set(center.x, center.y, center.z + maxDim * 2);
-                            camera.lookAt(center);
-                            controls.target.copy(center);
-                            break;
-                        case 'follow':
-                            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
-                            camera.lookAt(center);
-                            controls.target.copy(center);
-                            break;
-                        default:
-                            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
-                            camera.lookAt(center);
-                            controls.target.copy(center);
-                            break;
-                    }
-                    controls.update();
-                } else {
-                    // 第一人称：彻底禁用控制器
-                    controls.enabled = false;
+                switch (viewName) {
+                    case 'top':
+                        camera.position.set(center.x, maxDim * 2.5, center.z);
+                        camera.lookAt(center);
+                        controls.target.copy(center);
+                        break;
+                    case 'side':
+                        camera.position.set(center.x + maxDim * 2, center.y, center.z);
+                        camera.lookAt(center);
+                        controls.target.copy(center);
+                        break;
+                    case 'front':
+                        camera.position.set(center.x, center.y, center.z + maxDim * 2);
+                        camera.lookAt(center);
+                        controls.target.copy(center);
+                        break;
+                    case 'follow':
+                        camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+                        camera.lookAt(center);
+                        controls.target.copy(center);
+                        break;
+                    default:
+                        camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+                        camera.lookAt(center);
+                        controls.target.copy(center);
+                        break;
                 }
+                controls.update();
             }
 
             // ========== 控件绑定 ==========
@@ -574,14 +560,6 @@ if len(frames_data) > 0:
 
                 if (followAircraft) {
                     controls.target.copy(pos);
-                }
-
-                // 第一人称：手动同步相机位置和姿态
-                if (isFirstPerson) {
-                    const offset = new THREE.Vector3(70, 12, 0);
-                    offset.applyQuaternion(aircraftGroup.quaternion);
-                    camera.position.copy(aircraftGroup.position).add(offset);
-                    camera.quaternion.copy(aircraftGroup.quaternion);
                 }
 
                 // 更新面板数值
