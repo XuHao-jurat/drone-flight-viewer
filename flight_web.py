@@ -471,11 +471,14 @@ if len(frames_data) > 0:
     currentView = viewName;
     followAircraft = (viewName === 'follow');
 
-    // 切换视角前先把相机从飞机组移出，恢复到场景根节点
+    // 先恢复相机到场景根节点，清理挂载状态
     if (camera.parent === aircraftGroup) {
         aircraftGroup.remove(camera);
         scene.add(camera);
     }
+
+    // 先启用控制器，非第一视角都用轨道控制
+    controls.enabled = true;
 
     switch (viewName) {
         case 'top':
@@ -499,12 +502,15 @@ if len(frames_data) > 0:
             controls.target.copy(center);
             break;
         case 'firstPerson':
-            // 把相机挂载到飞机组，放在机头前方，自动同步所有姿态
+            // 关键：禁用轨道控制器，避免和飞机姿态冲突产生抖动
+            controls.enabled = false;
+            // 相机挂载到飞机组，自动同步所有姿态
             scene.remove(camera);
             aircraftGroup.add(camera);
-            // 机头正前方，高度和驾驶舱齐平
-            camera.position.set(80, 15, 0);
-            camera.lookAt(1000, 15, 0);
+            // 机头正前方，驾驶舱高度，视线沿飞机X轴正方向（机头朝向）
+            camera.position.set(70, 12, 0);
+            // 重置相机旋转，完全继承飞机组的姿态
+            camera.rotation.set(0, 0, 0);
             break;
         default:
             camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
