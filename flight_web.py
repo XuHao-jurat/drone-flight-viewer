@@ -52,6 +52,120 @@ def parse_csv_data(csv_string):
         raise ValueError("有效数据行为0")
     return df
 
+# ===================== 【新增】飞行指标校验配置 =====================
+METRIC_CONFIG = {
+    "当前高度": {
+        "required_fields": ["altitude"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "m"
+    },
+    "当前航向": {
+        "required_fields": ["heading"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "°"
+    },
+    "俯仰角": {
+        "required_fields": ["pitch"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "°"
+    },
+    "滚转角": {
+        "required_fields": ["roll"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "°"
+    },
+    "地速(水平速度)": {
+        "required_fields": ["latitude", "longitude"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "m/s"
+    },
+    "升降速度": {
+        "required_fields": ["altitude"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "m/s"
+    },
+    "累计飞行航程": {
+        "required_fields": ["latitude", "longitude"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "m"
+    },
+    "当前经纬度": {
+        "required_fields": ["latitude", "longitude"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": ""
+    }
+}
+
+# ===================== 【新增】指标可计算性校验函数 =====================
+def validate_calculable_metrics(df: pd.DataFrame, config: dict, min_valid_ratio: float = 0.1) -> dict:
+    result = {"calculable": {}, "incalculable": {}}
+    total_rows = len(df)
+    if total_rows == 0:
+        for metric in config:
+            result["incalculable"][metric] = ["数据表为空，无有效数据"]
+        return result
+
+    for metric_name, cfg in config.items():
+        required = cfg["required_fields"]
+        rules = cfg["rules"]
+        errors = []
+
+        for field in required:
+            if field not in df.columns:
+                errors.append(f"缺失字段【{field}】")
+                continue
+            col = df[field]
+            if rules.get("required_type") == "number" and not pd.api.types.is_numeric_dtype(col):
+                errors.append(f"字段【{field}】为非数值类型")
+                continue
+            valid_count = col.dropna().shape[0]
+            if valid_count / total_rows < min_valid_ratio:
+                errors.append(f"字段【{field}】有效数据占比不足{min_valid_ratio*100:.0f}%")
+                continue
+            if not rules.get("allow_zero", True):
+                non_zero = col.dropna()[col.dropna() != 0].shape[0]
+                if non_zero / total_rows < min_valid_ratio:
+                    errors.append(f"字段【{field}】非零有效数据不足")
+        if errors:
+            result["incalculable"][metric_name] = errors
+        else:
+            result["calculable"][metric_name] = {"unit": cfg["unit"]}
+    return result
+
+# ===================== 【新增】预计算衍生运动数据 =====================
+def calc_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    R = 6371000
+    lat_rad = np.radians(df["latitude"])
+    lon_rad = np.radians(df["longitude"])
+    
+    # 相邻帧水平距离（米）
+    dlat = np.diff(lat_rad, prepend=lat_rad.iloc[0])
+    dlon = np.diff(lon_rad, prepend=lon_rad.iloc[0])
+    a = np.sin(dlat/2)**2 + np.cos(lat_rad) * np.cos(lat_rad.shift(1).fillna(lat_rad.iloc[0])) * np.sin(dlon/2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+    df["_dist_step"] = R * c
+    
+    # 累计航程
+    df["distance"] = np.cumsum(df["_dist_step"])
+    
+    # 默认帧间隔100ms（与前端播放帧率一致），若有time字段则用真实时间差
+    if "time" in df.columns and pd.api.types.is_numeric_dtype(df["time"]):
+        dt = np.diff(df["time"], prepend=df["time"].iloc[0])
+        dt[dt == 0] = 0.1
+    else:
+        dt = 0.1
+    
+    # 地速 m/s
+    df["ground_speed"] = df["_dist_step"] / dt
+    df.loc[0, "ground_speed"] = 0
+    
+    # 升降速度 m/s
+    df["vertical_speed"] = np.diff(df["altitude"], prepend=df["altitude"].iloc[0]) / dt
+    df.loc[0, "vertical_speed"] = 0
+    
+    return df
+
 # ===================== 侧边栏数据输入 =====================
 with st.sidebar:
     st.header("数据输入")
@@ -61,6 +175,8 @@ with st.sidebar:
     load_btn = st.button("加载数据", use_container_width=True)
 
 frames_data = []
+metrics_check = {"calculable": {}, "incalculable": {}}
+
 if load_btn:
     try:
         if input_mode == "粘贴CSV文本":
@@ -80,30 +196,57 @@ if load_btn:
         
         df = parse_csv_data(raw_text)
         
+        # 【新增】执行指标校验
+        metrics_check = validate_calculable_metrics(df, METRIC_CONFIG)
+        
+        # 【新增】预计算衍生数据
+        df = calc_derived_metrics(df)
+        
         lat0 = df["latitude"].iloc[0]
         lon0 = df["longitude"].iloc[0]
         
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
-            frames_data.append({
+            frame_item = {
                 "x": float(e),
                 "y": float(n),
                 "z": float(u),
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
-                "roll": float(row["roll"])
-            })
+                "roll": float(row["roll"]),
+                # 【新增】衍生字段，没有则为0
+                "ground_speed": float(row.get("ground_speed", 0)),
+                "vertical_speed": float(row.get("vertical_speed", 0)),
+                "distance": float(row.get("distance", 0)),
+                "lat": float(row["latitude"]),
+                "lon": float(row["longitude"])
+            }
+            frames_data.append(frame_item)
+            
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
-        st.caption(f"首帧姿态：航向 {frames_data[0]['heading']:.1f}° / 俯仰 {frames_data[0]['pitch']:.1f}° / 滚转 {frames_data[0]['roll']:.1f}°")
+        
+        # 【新增】侧边栏展示校验结果
+        st.subheader("📊 数据可用性校验")
+        if metrics_check["calculable"]:
+            st.write("✅ 可正常显示的数据：")
+            for m in metrics_check["calculable"]:
+                st.text(f"  · {m}")
+        if metrics_check["incalculable"]:
+            st.write("❌ 无法显示的数据：")
+            for m, reasons in metrics_check["incalculable"].items():
+                st.text(f"  · {m}")
+                for r in reasons:
+                    st.text(f"      → {r}")
         
     except Exception as e:
         st.error(f"数据解析失败：{str(e)}")
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染 + 新增姿态仪表 =====================
+# ===================== 3D渲染 + 底部仪表条（核心逻辑完全未改动，仅新增布局） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
+    metrics_json = json.dumps(metrics_check, ensure_ascii=False)
     total = len(frames_data)
     
     html_template = r"""
@@ -157,44 +300,85 @@ if len(frames_data) > 0:
         button:hover { background:#3b7eea; }
         select, input[type=range] { padding:4px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; }
         
-        /* 姿态仪表面板 */
-        .attitude-panel {
-            position:absolute; top:112px; right:20px; width:260px;
-            background:rgba(0,0,0,0.8); padding:10px 12px; border-radius:8px;
-            z-index:10;
-            text-align:center;
-            border: 1px solid #333;
-        }
-        .attitude-panel canvas {
-            width: 240px;
-            height: 240px;
-            border-radius: 50%;
-            background: #000;
-            display:block;
-            margin:0 auto;
-        }
-        .attitude-title {
-            font-size:13px;
-            color:#aaa;
-            margin-bottom:8px;
-            text-align:left;
-        }
-
-        .info-panel {
-            position:absolute; top:370px; right:20px; width:260px;
-            background:rgba(0,0,0,0.75); padding:15px; border-radius:8px;
-            font-size:14px; line-height:2; z-index:10;
-            border: 1px solid #333;
-        }
-        #error-tip {
-            position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
-            color:#ff4444; font-size:16px; z-index:99;
-        }
+        /* 主3D视图区域 */
         #canvas-container { 
             flex:1;
             width:100%; 
             min-height:0;
             position:relative;
+        }
+        
+        /* 【新增】方案B 底部横向仪表条 */
+        .bottom-instrument-bar {
+            height: 260px;
+            flex-shrink: 0;
+            background: #14161b;
+            border-top: 1px solid #333;
+            display: flex;
+            padding: 10px 20px;
+            gap: 20px;
+        }
+        
+        /* 姿态指示器容器 */
+        .attitude-wrap {
+            width: 240px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .attitude-wrap .title {
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 6px;
+            align-self: flex-start;
+        }
+        .attitude-wrap canvas {
+            width: 220px;
+            height: 220px;
+            border-radius: 50%;
+            background: #000;
+            border: 2px solid #444;
+        }
+        
+        /* 数据状态面板 */
+        .data-panel {
+            flex: 1;
+            display: flex;
+            gap: 20px;
+            overflow-y: auto;
+        }
+        .data-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .data-col h4 {
+            font-size: 14px;
+            color: #ccc;
+            border-bottom: 1px solid #333;
+            padding-bottom: 4px;
+            margin-bottom: 4px;
+        }
+        .data-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            padding: 4px 8px;
+            background: #1a1c23;
+            border-radius: 4px;
+        }
+        .data-item .label { color: #aaa; }
+        .data-item .value { color: #00ff00; font-weight: bold; }
+        .data-item.disabled { opacity: 0.5; }
+        .data-item.disabled .value { color: #888; font-size: 11px; font-weight: normal; }
+
+        #error-tip {
+            position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+            color:#ff4444; font-size:16px; z-index:99;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -232,18 +416,21 @@ if len(frames_data) > 0:
         <label><input type="checkbox" id="showHorizonAxis" checked> 水平参考系</label>
     </div>
 
-    <div id="canvas-container">
-        <!-- 新增姿态地平仪 -->
-        <div class="attitude-panel">
-            <div class="attitude-title">姿态指示器 ADI</div>
-            <canvas id="attitudeCanvas" width="480" height="480"></canvas>
-        </div>
+    <div id="canvas-container"></div>
 
-        <div class="info-panel">
-            <div>高度 Altitude: <span id="altVal">0</span> m</div>
-            <div>航向 Heading: <span id="hdgVal">0</span> °</div>
-            <div>俯仰 Pitch: <span id="pitVal">0</span> °</div>
-            <div>滚转 Roll: <span id="rolVal">0</span> °</div>
+    <!-- 【新增】底部仪表条 -->
+    <div class="bottom-instrument-bar">
+        <div class="attitude-wrap">
+            <div class="title">姿态指示器 ADI</div>
+            <canvas id="attitudeCanvas" width="440" height="440"></canvas>
+        </div>
+        <div class="data-panel">
+            <div class="data-col" id="calculableCol">
+                <h4>✅ 可同步显示数据</h4>
+            </div>
+            <div class="data-col" id="incalculableCol">
+                <h4>❌ 无法显示数据</h4>
+            </div>
         </div>
     </div>
 
@@ -327,7 +514,7 @@ if len(frames_data) > 0:
                 domElement.addEventListener( 'wheel', onMouseWheel, false );
             };
 
-            // ========== 姿态地平仪绘制（新增，纯Canvas2D，不影响3D） ==========
+            // ========== 【新增】姿态地平仪绘制 ==========
             const attitudeCanvas = document.getElementById('attitudeCanvas');
             const actx = attitudeCanvas.getContext('2d');
             const acx = attitudeCanvas.width / 2;
@@ -336,30 +523,21 @@ if len(frames_data) > 0:
 
             function drawAttitudeIndicator(pitchDeg, rollDeg, headingDeg) {
                 actx.clearRect(0, 0, attitudeCanvas.width, attitudeCanvas.height);
-
-                // 圆形裁剪
                 actx.save();
                 actx.beginPath();
                 actx.arc(acx, acy, aradius, 0, Math.PI * 2);
                 actx.clip();
 
-                // 滚转旋转
                 actx.save();
                 actx.translate(acx, acy);
                 actx.rotate(rollDeg * Math.PI / 180);
 
-                // 俯仰偏移：每度对应6像素
                 const pitchPx = pitchDeg * 6;
-
-                // 天空
                 actx.fillStyle = '#1e90ff';
                 actx.fillRect(-aradius*2, -aradius*2, aradius*4, aradius*2 + pitchPx);
-
-                // 地面
                 actx.fillStyle = '#8b4513';
                 actx.fillRect(-aradius*2, pitchPx, aradius*4, aradius*4 - pitchPx);
 
-                // 地平线
                 actx.strokeStyle = '#ffffff';
                 actx.lineWidth = 3;
                 actx.beginPath();
@@ -367,7 +545,6 @@ if len(frames_data) > 0:
                 actx.lineTo(aradius*2, pitchPx);
                 actx.stroke();
 
-                // 俯仰刻度线 + 数值
                 actx.strokeStyle = '#ffffff';
                 actx.lineWidth = 2;
                 actx.font = 'bold 22px Arial';
@@ -386,28 +563,23 @@ if len(frames_data) > 0:
                         actx.fillText(Math.abs(i).toString(), 70, y + 7);
                     }
                 }
-
                 actx.restore();
                 actx.restore();
 
-                // 固定飞机基准符号（不随姿态旋转，黄色）
                 actx.save();
                 actx.translate(acx, acy);
                 actx.strokeStyle = '#ffff00';
                 actx.fillStyle = '#ffff00';
                 actx.lineWidth = 4;
-                // 左右机翼
                 actx.beginPath();
                 actx.moveTo(-90, 0);
                 actx.lineTo(-20, 0);
                 actx.moveTo(20, 0);
                 actx.lineTo(90, 0);
                 actx.stroke();
-                // 中心圆点
                 actx.beginPath();
                 actx.arc(0, 0, 7, 0, Math.PI * 2);
                 actx.fill();
-                // 顶部航向三角标记
                 actx.beginPath();
                 actx.moveTo(0, -aradius + 18);
                 actx.lineTo(-14, -aradius + 40);
@@ -416,11 +588,59 @@ if len(frames_data) > 0:
                 actx.fill();
                 actx.restore();
 
-                // 底部航向数值
                 actx.fillStyle = '#00ff00';
-                actx.font = 'bold 22px Arial';
+                actx.font = 'bold 20px Arial';
                 actx.textAlign = 'center';
-                actx.fillText(`HDG ${headingDeg.toFixed(0)}°`, acx, acy + aradius - 25);
+                actx.fillText(`HDG ${headingDeg.toFixed(0)}°`, acx, acy + aradius - 20);
+            }
+
+            // ========== 【新增】数据面板动态渲染 ==========
+            const metricsConfig = __METRICS_JSON__;
+            const calculableCol = document.getElementById('calculableCol');
+            const incalculableCol = document.getElementById('incalculableCol');
+            const valueElements = {};
+
+            function initDataPanel() {
+                // 可计算数据项
+                for (const name in metricsConfig.calculable) {
+                    const item = document.createElement('div');
+                    item.className = 'data-item';
+                    item.innerHTML = `
+                        <span class="label">${name}</span>
+                        <span class="value" id="val_${name.replace(/[^\w]/g,'_')}">--</span>
+                    `;
+                    calculableCol.appendChild(item);
+                    valueElements[name] = document.getElementById(`val_${name.replace(/[^\w]/g,'_')}`);
+                }
+                if (Object.keys(metricsConfig.calculable).length === 0) {
+                    calculableCol.innerHTML += '<div style="color:#666; font-size:12px;">暂无可显示数据</div>';
+                }
+
+                // 不可计算数据项
+                for (const name in metricsConfig.incalculable) {
+                    const reasons = metricsConfig.incalculable[name];
+                    const item = document.createElement('div');
+                    item.className = 'data-item disabled';
+                    item.innerHTML = `
+                        <span class="label">${name}</span>
+                        <span class="value">${reasons[0]}</span>
+                    `;
+                    incalculableCol.appendChild(item);
+                }
+                if (Object.keys(metricsConfig.incalculable).length === 0) {
+                    incalculableCol.innerHTML += '<div style="color:#666; font-size:12px;">全部数据可正常显示</div>';
+                }
+            }
+
+            function updateDataValues(frame) {
+                if (valueElements['当前高度']) valueElements['当前高度'].textContent = frame.z.toFixed(1) + ' m';
+                if (valueElements['当前航向']) valueElements['当前航向'].textContent = frame.heading.toFixed(1) + ' °';
+                if (valueElements['俯仰角']) valueElements['俯仰角'].textContent = frame.pitch.toFixed(1) + ' °';
+                if (valueElements['滚转角']) valueElements['滚转角'].textContent = frame.roll.toFixed(1) + ' °';
+                if (valueElements['地速(水平速度)']) valueElements['地速(水平速度)'].textContent = frame.ground_speed.toFixed(2) + ' m/s';
+                if (valueElements['升降速度']) valueElements['升降速度'].textContent = frame.vertical_speed.toFixed(2) + ' m/s';
+                if (valueElements['累计飞行航程']) valueElements['累计飞行航程'].textContent = frame.distance.toFixed(1) + ' m';
+                if (valueElements['当前经纬度']) valueElements['当前经纬度'].textContent = frame.lat.toFixed(6) + ', ' + frame.lon.toFixed(6);
             }
 
             // ========== 主渲染逻辑（完全未改动） ==========
@@ -454,20 +674,17 @@ if len(frames_data) > 0:
             const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
             scene.add(gridHelper);
 
-            // 完整轨迹线
             const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
             const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
             const fullLineMat = new THREE.LineBasicMaterial({ color: 0x888888 });
             const fullLine = new THREE.Line(fullLineGeo, fullLineMat);
             scene.add(fullLine);
 
-            // 已飞轨迹线
             const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
             const flownLineMat = new THREE.LineBasicMaterial({ color: 0xff4444, linewidth: 3 });
             const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
             scene.add(flownLine);
 
-            // ========== 飞机模型 ==========
             const aircraftGroup = new THREE.Group();
             const s = AIRCRAFT_SIZE / 150;
 
@@ -499,12 +716,10 @@ if len(frames_data) > 0:
             vTail.position.set(-50 * s, 17.5 * s, 0);
             aircraftGroup.add(vTail);
 
-            // 机体坐标系
             const aircraftAxis = new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE);
             aircraftGroup.add(aircraftAxis);
             scene.add(aircraftGroup);
 
-            // 水平参考坐标系
             const horizonGroup = new THREE.Group();
             const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
             hAxis.material.opacity = 0.45;
@@ -512,7 +727,6 @@ if len(frames_data) > 0:
             horizonGroup.add(hAxis);
             scene.add(horizonGroup);
 
-            // 相机自动适配
             const box = new THREE.Box3().setFromPoints(allPoints);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
@@ -548,18 +762,12 @@ if len(frames_data) > 0:
                 controls.update();
             }
 
-            // 控件绑定
             const playBtn = document.getElementById('playBtn');
             const speedSelect = document.getElementById('speedSelect');
             const frameSlider = document.getElementById('frameSlider');
             const viewSelect = document.getElementById('viewSelect');
             const frameText = document.getElementById('frameText');
-            const altVal = document.getElementById('altVal');
-            const hdgVal = document.getElementById('hdgVal');
-            const pitVal = document.getElementById('pitVal');
-            const rolVal = document.getElementById('rolVal');
 
-            // 坐标系开关
             const showAircraftAxis = document.getElementById('showAircraftAxis');
             const showHorizonAxis = document.getElementById('showHorizonAxis');
             showAircraftAxis.addEventListener('change', e => {
@@ -582,7 +790,6 @@ if len(frames_data) > 0:
                 aircraftGroup.position.copy(pos);
                 horizonGroup.position.copy(pos);
 
-                // 原始姿态计算 完全未修改
                 const h = THREE.MathUtils.degToRad(90 - frame.heading);
                 const p = THREE.MathUtils.degToRad(frame.pitch);
                 const r = THREE.MathUtils.degToRad(frame.roll);
@@ -594,7 +801,6 @@ if len(frames_data) > 0:
 
                 horizonGroup.rotation.y = h;
 
-                // 更新已飞轨迹
                 const flownPts = allPoints.slice(0, currentFrame + 1);
                 flownLine.geometry.dispose();
                 flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
@@ -603,16 +809,12 @@ if len(frames_data) > 0:
                     controls.target.copy(pos);
                 }
 
-                // 更新面板数值
-                altVal.textContent = frame.z.toFixed(1);
-                hdgVal.textContent = frame.heading.toFixed(1);
-                pitVal.textContent = frame.pitch.toFixed(1);
-                rolVal.textContent = frame.roll.toFixed(1);
                 frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
                 frameSlider.value = currentFrame;
 
-                // 更新姿态仪表
+                // 【新增】更新姿态仪表和数据面板
                 drawAttitudeIndicator(frame.pitch, frame.roll, frame.heading);
+                updateDataValues(frame);
             }
 
             playBtn.addEventListener('click', function() {
@@ -639,7 +841,6 @@ if len(frames_data) > 0:
                 updateFrame();
             });
 
-            // 动画循环
             function animate(time) {
                 requestAnimationFrame(animate);
                 if (isPlaying) {
@@ -670,6 +871,7 @@ if len(frames_data) > 0:
             });
 
             // 初始化
+            initDataPanel();
             setCameraView('free');
             updateFrame();
             animate(0);
@@ -686,10 +888,11 @@ if len(frames_data) > 0:
     """
     
     html_template = html_template.replace("__DATA_JSON__", data_json)
+    html_template = html_template.replace("__METRICS_JSON__", metrics_json)
     html_template = html_template.replace("__TOTAL__", str(total - 1))
     html_template = html_template.replace("__TOTAL_PLUS_ONE__", str(total))
 
-    components.html(html_template, height=780, scrolling=False)
+    components.html(html_template, height=950, scrolling=False)
 
 else:
     st.info("👈 请在左侧侧边栏输入CSV数据，点击【加载数据】开始可视化")
