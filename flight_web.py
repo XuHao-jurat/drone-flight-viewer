@@ -9,7 +9,7 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化工具")
 
-# 标准列顺序
+# 标准列顺序（与原始CSV完全对应）
 STANDARD_COLS = ["timestamp","latitude","longitude","altitude","heading","pitch","roll",
                  "ve","vn","vu","ae","an","au","vheading","vpitch","vroll"]
 
@@ -33,7 +33,7 @@ def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
 
-    # 错位修复：列数多1时删首列并重命名
+    # 错位修复：列数多1时删除首列冗余空列，强制标准列名映射
     if len(df.columns) == len(STANDARD_COLS) + 1:
         df = df.iloc[:, 1:].reset_index(drop=True)
         df.columns = STANDARD_COLS[:len(df.columns)]
@@ -41,8 +41,9 @@ def parse_csv_data(csv_string):
     required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
-        raise ValueError(f"缺少必填列：{missing_cols}，当前列名：{list(df.columns)}")
+        raise ValueError(f"缺少核心必填列：{missing_cols}，当前列名：{list(df.columns)}")
     
+    # 可选字段缺失自动补0
     optional_cols = {
         "timestamp": 0, "ve": 0.0, "vn": 0.0, "vu": 0.0,
         "vheading": 0.0, "vpitch": 0.0, "vroll": 0.0
@@ -59,7 +60,7 @@ def parse_csv_data(csv_string):
     df["vg"] = np.sqrt(df["ve"]**2 + df["vn"]**2)
     df["gamma_deg"] = np.degrees(np.arctan2(df["vu"], np.sqrt(df["ve"]**2 + df["vn"]**2)))
     
-    # 飞行状态判定（修复：匹配姿态倾角）
+    # 飞行状态判定（匹配姿态倾角）
     df["flight_status"] = 0
     turn_mask = (abs(df["roll"]) >= 2.0) | (abs(df["vheading"]) >= 1.0) | (abs(df["vroll"]) >= 1.0)
     df.loc[turn_mask, "flight_status"] = 3
@@ -68,6 +69,7 @@ def parse_csv_data(csv_string):
     df.loc[climb_mask, "flight_status"] = 1
     df.loc[descend_mask, "flight_status"] = 2
 
+    # 时间戳容错
     if df["timestamp"].iloc[0] == 0 or abs(df["timestamp"].iloc[0]) < 1e9:
         df["timestamp"] = np.arange(len(df)) * 1000
 
@@ -130,7 +132,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染组件（回退稳定版，无第一人称） =====================
+# ===================== 3D渲染组件（稳定版，无第一人称，坐标映射正确） =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -368,6 +370,7 @@ if len(frames_data) > 0:
 
             const statusText = ["平飞","爬升","下降","转弯"];
 
+            // ENU坐标转Three.js坐标：东→X，天→Y，北→-Z
             function enu2three(x, y, z) {
                 return new THREE.Vector3(x, z, -y);
             }
@@ -541,7 +544,7 @@ if len(frames_data) > 0:
                 aircraftGroup.position.copy(pos);
                 horizonGroup.position.copy(pos);
 
-                // 原始姿态计算 完全未修改
+                // 原始姿态计算，完全未改动
                 const h = THREE.MathUtils.degToRad(90 - frame.heading);
                 const p = THREE.MathUtils.degToRad(frame.pitch);
                 const r = THREE.MathUtils.degToRad(frame.roll);
