@@ -9,6 +9,10 @@ from io import StringIO
 st.set_page_config(page_title="无人机飞行轨迹与姿态可视化工具", layout="wide")
 st.title("✈️ 无人机飞行轨迹与姿态可视化工具")
 
+# 标准列顺序
+STANDARD_COLS = ["timestamp","latitude","longitude","altitude","heading","pitch","roll",
+                 "ve","vn","vu","ae","an","au","vheading","vpitch","vroll"]
+
 # ===================== 标准航空坐标转换 =====================
 def ll2local_enu(lat0, lon0, lat, lon, alt):
     R = 6371000
@@ -20,7 +24,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析（核心逻辑完全保留，仅新增衍生量计算） =====================
+# ===================== CSV解析 =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -29,53 +33,43 @@ def parse_csv_data(csv_string):
     df = pd.read_csv(StringIO(fixed_csv))
     df.columns = df.columns.str.strip()
 
-    # 核心必填字段（错位修复后一定存在）
+    # 错位修复：列数多1时删首列并重命名
+    if len(df.columns) == len(STANDARD_COLS) + 1:
+        df = df.iloc[:, 1:].reset_index(drop=True)
+        df.columns = STANDARD_COLS[:len(df.columns)]
+    
     required_cols = ["latitude", "longitude", "altitude", "heading", "pitch", "roll"]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
-        raise ValueError(f"缺少核心必填列：{missing_cols}，当前列名：{list(df.columns)}")
+        raise ValueError(f"缺少必填列：{missing_cols}，当前列名：{list(df.columns)}")
     
-    # 可选字段（错位后缺失自动补0）
     optional_cols = {
-        "ve": 0.0, "vn": 0.0, "vu": 0.0,
+        "timestamp": 0, "ve": 0.0, "vn": 0.0, "vu": 0.0,
         "vheading": 0.0, "vpitch": 0.0, "vroll": 0.0
     }
     for col, default in optional_cols.items():
         if col not in df.columns:
             df[col] = default
     
-    # 统一转数值
     all_cols = required_cols + list(optional_cols.keys())
     for col in all_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
-    
-    # ========== 错位修复逻辑完全保留，和稳定版一致 ==========
-    first_lat = df["latitude"].dropna().iloc[0]
-    if abs(first_lat) > 90:
-        new_cols = list(df.columns[1:]) + ['_drop_col']
-        df.columns = new_cols
-        df = df.drop(columns=['_drop_col'])
-        df.columns = df.columns.str.strip()
-        for col, default in optional_cols.items():
-            if col not in df.columns:
-                df[col] = default
-        for col in all_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(optional_cols.get(col, 0))
 
-    # ========== 新增：基于现有数据计算衍生量 ==========
-    # 1. 合地速大小
-    df["vg"] = np.sqrt(df["ve"]**2 + df["vn"]**2 + df["vu"]**2)
-    # 2. 航迹角（实际轨迹俯仰角）
+    # 衍生量计算
+    df["vg"] = np.sqrt(df["ve"]**2 + df["vn"]**2)
     df["gamma_deg"] = np.degrees(np.arctan2(df["vu"], np.sqrt(df["ve"]**2 + df["vn"]**2)))
-    # 3. 飞行状态：0=平飞 1=爬升 2=下降 3=转弯
+    
+    # 飞行状态判定（修复：匹配姿态倾角）
     df["flight_status"] = 0
-    turn_mask = (abs(df["vheading"]) > 2) | (abs(df["vroll"]) > 2)
+    turn_mask = (abs(df["roll"]) >= 2.0) | (abs(df["vheading"]) >= 1.0) | (abs(df["vroll"]) >= 1.0)
     df.loc[turn_mask, "flight_status"] = 3
-    climb_mask = (~turn_mask) & (df["vu"] > 0.5)
-    descend_mask = (~turn_mask) & (df["vu"] < -0.5)
+    climb_mask = (~turn_mask) & (df["vu"] >= 0.2)
+    descend_mask = (~turn_mask) & (df["vu"] <= -0.2)
     df.loc[climb_mask, "flight_status"] = 1
     df.loc[descend_mask, "flight_status"] = 2
+
+    if df["timestamp"].iloc[0] == 0 or abs(df["timestamp"].iloc[0]) < 1e9:
+        df["timestamp"] = np.arange(len(df)) * 1000
 
     df = df.dropna(subset=required_cols).reset_index(drop=True)
     if len(df) == 0:
@@ -102,8 +96,7 @@ if load_btn:
             if uploaded_file is None:
                 st.error("请先选择要上传的CSV文件")
                 st.stop()
-            file_bytes = uploaded_file.getvalue()
-            raw_text = file_bytes.decode('utf-8-sig', errors='ignore')
+            raw_text = uploaded_file.getvalue().decode('utf-8-sig', errors='ignore')
         
         df = parse_csv_data(raw_text)
         
@@ -137,7 +130,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染（姿态逻辑完全保留，新增开关+面板+弹窗） =====================
+# ===================== 3D渲染组件 =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -294,11 +287,12 @@ if len(frames_data) > 0:
                 return;
             }
 
-            // ========== 轨道控制器（完全保留） ==========
+            // ========== 轨道控制器 ==========
             THREE.OrbitControls = function ( object, domElement ) {
                 this.object = object;
                 this.domElement = domElement;
                 this.target = new THREE.Vector3();
+                this.enabled = true;
                 this.enableDamping = true;
                 this.dampingFactor = 0.05;
                 this.rotateSpeed = 0.35;
@@ -314,12 +308,13 @@ if len(frames_data) > 0:
                 var previousMousePosition = { x: 0, y: 0 };
 
                 function onMouseDown( event ) {
+                    if (!scope.enabled) return;
                     isDragging = true;
                     previousMousePosition.x = event.clientX;
                     previousMousePosition.y = event.clientY;
                 }
                 function onMouseMove( event ) {
-                    if ( !isDragging ) return;
+                    if ( !isDragging || !scope.enabled ) return;
                     var deltaX = event.clientX - previousMousePosition.x;
                     var deltaY = event.clientY - previousMousePosition.y;
                     sphericalDelta.theta -= deltaX * 0.01 * scope.rotateSpeed;
@@ -329,6 +324,7 @@ if len(frames_data) > 0:
                 }
                 function onMouseUp() { isDragging = false; }
                 function onMouseWheel( event ) {
+                    if (!scope.enabled) return;
                     event.preventDefault();
                     if ( event.deltaY < 0 ) {
                         scale /= Math.pow( 0.95, scope.zoomSpeed );
@@ -407,13 +403,13 @@ if len(frames_data) > 0:
             const fullLine = new THREE.Line(fullLineGeo, fullLineMat);
             scene.add(fullLine);
 
-            // 已飞高亮轨迹
+            // 已飞轨迹线
             const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
             const flownLineMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 3 });
             const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
             scene.add(flownLine);
 
-            // ========== 飞机模型（原始姿态逻辑完全保留） ==========
+            // ========== 飞机模型 ==========
             const aircraftGroup = new THREE.Group();
             const s = AIRCRAFT_SIZE / 150;
 
@@ -461,65 +457,54 @@ if len(frames_data) > 0:
             // 相机自动适配
             const box = new THREE.Box3().setFromPoints(allPoints);
             const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
-            const maxDim = Math.max(size.x, size.y, size.z) || 2000;
+            const sizeVec = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z) || 2000;
 
             let currentView = 'free';
             let followAircraft = false;
+            let isFirstPerson = false;
 
             function setCameraView(viewName) {
-    currentView = viewName;
-    followAircraft = (viewName === 'follow');
+                currentView = viewName;
+                followAircraft = (viewName === 'follow');
+                isFirstPerson = (viewName === 'firstPerson');
 
-    // 先恢复相机到场景根节点，清理挂载状态
-    if (camera.parent === aircraftGroup) {
-        aircraftGroup.remove(camera);
-        scene.add(camera);
-    }
-
-    // 先启用控制器，非第一视角都用轨道控制
-    controls.enabled = true;
-
-    switch (viewName) {
-        case 'top':
-            camera.position.set(center.x, maxDim * 2.5, center.z);
-            camera.lookAt(center);
-            controls.target.copy(center);
-            break;
-        case 'side':
-            camera.position.set(center.x + maxDim * 2, center.y, center.z);
-            camera.lookAt(center);
-            controls.target.copy(center);
-            break;
-        case 'front':
-            camera.position.set(center.x, center.y, center.z + maxDim * 2);
-            camera.lookAt(center);
-            controls.target.copy(center);
-            break;
-        case 'follow':
-            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
-            camera.lookAt(center);
-            controls.target.copy(center);
-            break;
-        case 'firstPerson':
-            // 关键：禁用轨道控制器，避免和飞机姿态冲突产生抖动
-            controls.enabled = false;
-            // 相机挂载到飞机组，自动同步所有姿态
-            scene.remove(camera);
-            aircraftGroup.add(camera);
-            // 机头正前方，驾驶舱高度，视线沿飞机X轴正方向（机头朝向）
-            camera.position.set(70, 12, 0);
-            // 重置相机旋转，完全继承飞机组的姿态
-            camera.rotation.set(0, 0, 0);
-            break;
-        default:
-            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
-            camera.lookAt(center);
-            controls.target.copy(center);
-            break;
-    }
-    controls.update();
-}
+                // 非第一人称：恢复轨道控制器
+                if (!isFirstPerson) {
+                    controls.enabled = true;
+                    switch (viewName) {
+                        case 'top':
+                            camera.position.set(center.x, maxDim * 2.5, center.z);
+                            camera.lookAt(center);
+                            controls.target.copy(center);
+                            break;
+                        case 'side':
+                            camera.position.set(center.x + maxDim * 2, center.y, center.z);
+                            camera.lookAt(center);
+                            controls.target.copy(center);
+                            break;
+                        case 'front':
+                            camera.position.set(center.x, center.y, center.z + maxDim * 2);
+                            camera.lookAt(center);
+                            controls.target.copy(center);
+                            break;
+                        case 'follow':
+                            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+                            camera.lookAt(center);
+                            controls.target.copy(center);
+                            break;
+                        default:
+                            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+                            camera.lookAt(center);
+                            controls.target.copy(center);
+                            break;
+                    }
+                    controls.update();
+                } else {
+                    // 第一人称：彻底禁用控制器
+                    controls.enabled = false;
+                }
+            }
 
             // ========== 控件绑定 ==========
             const playBtn = document.getElementById('playBtn');
@@ -559,7 +544,7 @@ if len(frames_data) > 0:
             let lastTime = null;
             const frameInterval = 100;
 
-            // 射线检测用于悬浮弹窗
+            // 射线检测悬浮弹窗
             const raycaster = new THREE.Raycaster();
             const mouse = new THREE.Vector2();
 
@@ -591,7 +576,15 @@ if len(frames_data) > 0:
                     controls.target.copy(pos);
                 }
 
-                // 更新面板所有数值
+                // 第一人称：手动同步相机位置和姿态
+                if (isFirstPerson) {
+                    const offset = new THREE.Vector3(70, 12, 0);
+                    offset.applyQuaternion(aircraftGroup.quaternion);
+                    camera.position.copy(aircraftGroup.position).add(offset);
+                    camera.quaternion.copy(aircraftGroup.quaternion);
+                }
+
+                // 更新面板数值
                 altVal.textContent = frame.z.toFixed(1);
                 vgVal.textContent = frame.vg.toFixed(2);
                 gammaVal.textContent = frame.gamma.toFixed(2);
