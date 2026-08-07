@@ -359,17 +359,21 @@ if load_btn:
         for idx, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
             frame_item = {
-                "x": float(e),
-                "y": float(n),
-                "z": float(u),
+                # 原始基础字段（修复：补全 altitude 字段）
+                "altitude": float(row["altitude"]),
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
                 "roll": float(row["roll"]),
+                "lat": float(row["latitude"]),
+                "lon": float(row["longitude"]),
+                # 3D坐标
+                "x": float(e),
+                "y": float(n),
+                "z": float(u),
+                # 衍生指标
                 "ground_speed": float(row["ground_speed"]),
                 "vertical_speed": float(row["vertical_speed"]),
                 "distance": float(row["distance"]),
-                "lat": float(row["latitude"]),
-                "lon": float(row["longitude"]),
                 "ve": float(row["_ve_use"]),
                 "vn": float(row["_vn_use"]),
                 "vu": float(row["_vu_use"]),
@@ -930,7 +934,7 @@ if len(frames_data) > 0:
                     labelWrap.appendChild(source);
 
                     const value = document.createElement('div');
-                    // 核心修正：仅二阶及以上才标红
+                    // 仅二阶及以上才标红
                     value.className = 'value' + (info.diff_order >= 2 ? ' high-order' : '');
                     value.dataset.key = info.key;
                     value.dataset.unit = info.unit;
