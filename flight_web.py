@@ -537,6 +537,7 @@ if len(frames_data) > 0:
         .data-item .label { color: #aaa; font-size: 16px; }
         .data-item .source { color: #666; font-size: 11px; }
         .data-item .value { color: #00ff00; font-weight: bold; font-size: 16px; }
+        /* 仅二阶及以上高阶推算标红 */
         .data-item .value.high-order { color: #ff4444; }
         .data-item.disabled { opacity: 0.5; }
         .data-item.disabled .value { color: #888; font-size: 11px; font-weight: normal; }
@@ -683,7 +684,7 @@ if len(frames_data) > 0:
                 domElement.addEventListener( 'wheel', onMouseWheel, false );
             };
 
-            // ========== 姿态地平仪绘制（完全参照正确版本） ==========
+            // ========== 姿态地平仪绘制 ==========
             const attitudeCanvas = document.getElementById('attitudeCanvas');
             const actx = attitudeCanvas.getContext('2d');
             const acx = attitudeCanvas.width / 2;
@@ -746,7 +747,7 @@ if len(frames_data) > 0:
                 actx.restore();
                 actx.restore();
 
-                // 固定飞机基准符号（不随姿态旋转，黄色）
+                // 固定飞机基准符号
                 actx.save();
                 actx.translate(acx, acy);
                 actx.strokeStyle = '#ffff00';
@@ -910,7 +911,6 @@ if len(frames_data) > 0:
             const incalculableCol = document.getElementById('incalculableCol');
 
             function buildDataPanels() {
-                // 可计算指标
                 const calcItems = metricsCheck.calculable;
                 for (const name in calcItems) {
                     const info = calcItems[name];
@@ -930,7 +930,8 @@ if len(frames_data) > 0:
                     labelWrap.appendChild(source);
 
                     const value = document.createElement('div');
-                    value.className = 'value' + (info.diff_order > 0 ? ' high-order' : '');
+                    // 核心修正：仅二阶及以上才标红
+                    value.className = 'value' + (info.diff_order >= 2 ? ' high-order' : '');
                     value.dataset.key = info.key;
                     value.dataset.unit = info.unit;
                     value.textContent = '--';
@@ -940,7 +941,6 @@ if len(frames_data) > 0:
                     calculableCol.appendChild(div);
                 }
 
-                // 不可计算指标
                 const incalcItems = metricsCheck.incalculable;
                 for (const name in incalcItems) {
                     const reasons = incalcItems[name];
