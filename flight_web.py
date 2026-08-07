@@ -611,406 +611,510 @@ if len(frames_data) > 0:
                 return;
             }
 
-            // ========== 3D场景初始化 ==========
+            // ========== 轨道控制器 ==========
+            THREE.OrbitControls = function ( object, domElement ) {
+                this.object = object;
+                this.domElement = domElement;
+                this.target = new THREE.Vector3();
+                this.enableDamping = true;
+                this.dampingFactor = 0.05;
+                this.rotateSpeed = 0.35;
+                this.zoomSpeed = 0.6;
+                this.minDistance = 10;
+                this.maxDistance = 100000;
+
+                var scope = this;
+                var spherical = new THREE.Spherical();
+                var sphericalDelta = new THREE.Spherical();
+                var scale = 1;
+                var isDragging = false;
+                var previousMousePosition = { x: 0, y: 0 };
+
+                function onMouseDown( event ) {
+                    isDragging = true;
+                    previousMousePosition.x = event.clientX;
+                    previousMousePosition.y = event.clientY;
+                }
+                function onMouseMove( event ) {
+                    if ( !isDragging ) return;
+                    var deltaX = event.clientX - previousMousePosition.x;
+                    var deltaY = event.clientY - previousMousePosition.y;
+                    sphericalDelta.theta -= deltaX * 0.01 * scope.rotateSpeed;
+                    sphericalDelta.phi -= deltaY * 0.01 * scope.rotateSpeed;
+                    previousMousePosition.x = event.clientX;
+                    previousMousePosition.y = event.clientY;
+                }
+                function onMouseUp() { isDragging = false; }
+                function onMouseWheel( event ) {
+                    event.preventDefault();
+                    if ( event.deltaY < 0 ) {
+                        scale /= Math.pow( 0.95, scope.zoomSpeed );
+                    } else {
+                        scale *= Math.pow( 0.95, scope.zoomSpeed );
+                    }
+                }
+
+                this.update = function () {
+                    var offset = new THREE.Vector3();
+                    var position = scope.object.position;
+                    offset.copy( position ).sub( scope.target );
+                    spherical.setFromVector3( offset );
+                    spherical.theta += sphericalDelta.theta;
+                    spherical.phi += sphericalDelta.phi;
+                    spherical.phi = Math.max( 0.1, Math.min( Math.PI - 0.1, spherical.phi ) );
+                    spherical.radius *= scale;
+                    spherical.radius = Math.max( scope.minDistance, Math.min( scope.maxDistance, spherical.radius ) );
+                    offset.setFromSpherical( spherical );
+                    position.copy( scope.target ).add( offset );
+                    scope.object.lookAt( scope.target );
+
+                    if ( scope.enableDamping ) {
+                        sphericalDelta.theta *= ( 1 - scope.dampingFactor );
+                        sphericalDelta.phi *= ( 1 - scope.dampingFactor );
+                    } else {
+                        sphericalDelta.set( 0, 0, 0 );
+                    }
+                    scale = 1;
+                };
+
+                domElement.addEventListener( 'mousedown', onMouseDown, false );
+                document.addEventListener( 'mousemove', onMouseMove, false );
+                document.addEventListener( 'mouseup', onMouseUp, false );
+                domElement.addEventListener( 'wheel', onMouseWheel, false );
+            };
+
+            // ========== 姿态地平仪绘制（完全参照正确版本） ==========
+            const attitudeCanvas = document.getElementById('attitudeCanvas');
+            const actx = attitudeCanvas.getContext('2d');
+            const acx = attitudeCanvas.width / 2;
+            const acy = attitudeCanvas.height / 2;
+            const aradius = acx - 10;
+
+            function drawAttitudeIndicator(pitchDeg, rollDeg, headingDeg) {
+                actx.clearRect(0, 0, attitudeCanvas.width, attitudeCanvas.height);
+
+                // 圆形裁剪
+                actx.save();
+                actx.beginPath();
+                actx.arc(acx, acy, aradius, 0, Math.PI * 2);
+                actx.clip();
+
+                // 滚转旋转
+                actx.save();
+                actx.translate(acx, acy);
+                actx.rotate(rollDeg * Math.PI / 180);
+
+                // 俯仰偏移：每度对应6像素
+                const pitchPx = pitchDeg * 6;
+
+                // 天空
+                actx.fillStyle = '#1e90ff';
+                actx.fillRect(-aradius*2, -aradius*2, aradius*4, aradius*2 + pitchPx);
+
+                // 地面
+                actx.fillStyle = '#8b4513';
+                actx.fillRect(-aradius*2, pitchPx, aradius*4, aradius*4 - pitchPx);
+
+                // 地平线
+                actx.strokeStyle = '#ffffff';
+                actx.lineWidth = 3;
+                actx.beginPath();
+                actx.moveTo(-aradius*2, pitchPx);
+                actx.lineTo(aradius*2, pitchPx);
+                actx.stroke();
+
+                // 俯仰刻度线 + 数值
+                actx.strokeStyle = '#ffffff';
+                actx.lineWidth = 2;
+                actx.font = 'bold 22px Arial';
+                actx.textAlign = 'center';
+                actx.fillStyle = '#ffffff';
+                for (let i = -30; i <= 30; i += 5) {
+                    const y = pitchPx - i * 6;
+                    if (y < -aradius + 20 || y > aradius - 20) continue;
+                    const len = i % 10 === 0 ? 50 : 25;
+                    actx.beginPath();
+                    actx.moveTo(-len, y);
+                    actx.lineTo(len, y);
+                    actx.stroke();
+                    if (i % 10 === 0 && i !== 0) {
+                        actx.fillText(Math.abs(i).toString(), -70, y + 7);
+                        actx.fillText(Math.abs(i).toString(), 70, y + 7);
+                    }
+                }
+
+                actx.restore();
+                actx.restore();
+
+                // 固定飞机基准符号（不随姿态旋转，黄色）
+                actx.save();
+                actx.translate(acx, acy);
+                actx.strokeStyle = '#ffff00';
+                actx.fillStyle = '#ffff00';
+                actx.lineWidth = 4;
+                // 左右机翼
+                actx.beginPath();
+                actx.moveTo(-90, 0);
+                actx.lineTo(-20, 0);
+                actx.moveTo(20, 0);
+                actx.lineTo(90, 0);
+                actx.stroke();
+                // 中心圆点
+                actx.beginPath();
+                actx.arc(0, 0, 7, 0, Math.PI * 2);
+                actx.fill();
+                // 顶部航向三角标记
+                actx.beginPath();
+                actx.moveTo(0, -aradius + 18);
+                actx.lineTo(-14, -aradius + 40);
+                actx.lineTo(14, -aradius + 40);
+                actx.closePath();
+                actx.fill();
+                actx.restore();
+
+                // 底部航向数值
+                actx.fillStyle = '#00ff00';
+                actx.font = 'bold 22px Arial';
+                actx.textAlign = 'center';
+                actx.fillText(`HDG ${headingDeg.toFixed(0)}°`, acx, acy + aradius - 25);
+            }
+
+            // ========== 主渲染逻辑 ==========
+            const frames = __DATA_JSON__;
+            const metricsCheck = __METRICS_JSON__;
+            const totalFrames = frames.length;
+
+            const AIRCRAFT_SIZE = 180;
+            const AIRCRAFT_AXIS_SIZE = 220;
+            const HORIZON_AXIS_SIZE  = 250;
+
+            function enu2three(x, y, z) {
+                return new THREE.Vector3(x, z, -y);
+            }
+
             const container = document.getElementById('canvas-container');
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x1a1d29);
 
-            const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 100000);
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 1000000);
+            const renderer = new THREE.WebGLRenderer({ antialias:true });
             renderer.setSize(container.clientWidth, container.clientHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             container.appendChild(renderer.domElement);
 
-            const gridHelper = new THREE.GridHelper(20000, 50, 0x444444, 0x222222);
-            scene.add(gridHelper);
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
 
             const ambientLight = new THREE.AmbientLight(0xffffff, 1);
             scene.add(ambientLight);
 
-            // 飞机模型
+            const gridHelper = new THREE.GridHelper(10000, 50, 0x444444, 0x222222);
+            scene.add(gridHelper);
+
+            // 完整轨迹线
+            const allPoints = frames.map(f => enu2three(f.x, f.y, f.z));
+            const fullLineGeo = new THREE.BufferGeometry().setFromPoints(allPoints);
+            const fullLineMat = new THREE.LineBasicMaterial({ color: 0x888888 });
+            const fullLine = new THREE.Line(fullLineGeo, fullLineMat);
+            scene.add(fullLine);
+
+            // 已飞轨迹线
+            const flownLineGeo = new THREE.BufferGeometry().setFromPoints([allPoints[0]]);
+            const flownLineMat = new THREE.LineBasicMaterial({ color: 0xff4444, linewidth: 3 });
+            const flownLine = new THREE.Line(flownLineGeo, flownLineMat);
+            scene.add(flownLine);
+
+            // ========== 飞机模型 ==========
             const aircraftGroup = new THREE.Group();
-            const bodyGeo = new THREE.BoxGeometry(100, 20, 20);
+            const s = AIRCRAFT_SIZE / 150;
+
+            const bodyGeo = new THREE.BoxGeometry(100 * s, 6 * s, 6 * s);
             const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
             const body = new THREE.Mesh(bodyGeo, bodyMat);
             aircraftGroup.add(body);
 
-            const wingGeo = new THREE.BoxGeometry(20, 5, 120);
-            const wingMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-            const wing = new THREE.Mesh(wingGeo, wingMat);
-            aircraftGroup.add(wing);
-
-            const noseGeo = new THREE.ConeGeometry(12, 40, 8);
+            const noseGeo = new THREE.BoxGeometry(20 * s, 8 * s, 8 * s);
             const noseMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
             const nose = new THREE.Mesh(noseGeo, noseMat);
-            nose.rotation.z = -Math.PI / 2;
-            nose.position.x = 70;
+            nose.position.x = 60 * s;
             aircraftGroup.add(nose);
 
+            const wingGeo = new THREE.BoxGeometry(20 * s, 3 * s, 130 * s);
+            const wingMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const wing = new THREE.Mesh(wingGeo, wingMat);
+            wing.position.x = -10 * s;
+            aircraftGroup.add(wing);
+
+            const hTailGeo = new THREE.BoxGeometry(15 * s, 2 * s, 60 * s);
+            const hTail = new THREE.Mesh(hTailGeo, wingMat);
+            hTail.position.x = -50 * s;
+            aircraftGroup.add(hTail);
+
+            const vTailGeo = new THREE.BoxGeometry(15 * s, 35 * s, 3 * s);
+            const vTailMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+            const vTail = new THREE.Mesh(vTailGeo, vTailMat);
+            vTail.position.set(-50 * s, 17.5 * s, 0);
+            aircraftGroup.add(vTail);
+
+            // 机体坐标系
+            const aircraftAxis = new THREE.AxesHelper(AIRCRAFT_AXIS_SIZE);
+            aircraftGroup.add(aircraftAxis);
             scene.add(aircraftGroup);
 
-            const aircraftAxis = new THREE.AxesHelper(200);
-            aircraftGroup.add(aircraftAxis);
-
+            // 水平参考坐标系
             const horizonGroup = new THREE.Group();
-            const horizonAxis = new THREE.AxesHelper(500);
-            horizonGroup.add(horizonAxis);
+            const hAxis = new THREE.AxesHelper(HORIZON_AXIS_SIZE);
+            hAxis.material.opacity = 0.45;
+            hAxis.material.transparent = true;
+            horizonGroup.add(hAxis);
             scene.add(horizonGroup);
 
-            // 轨迹线
-            const frames = __DATA_JSON__;
-            const totalFrames = frames.length;
-            const pathPoints = [];
-            for (let i = 0; i < totalFrames; i++) {
-                const f = frames[i];
-                pathPoints.push(new THREE.Vector3(f.x, f.z, -f.y));
-            }
-            const pathGeo = new THREE.BufferGeometry().setFromPoints(pathPoints);
-            const pathMat = new THREE.LineBasicMaterial({ color: 0x888888 });
-            const pathLine = new THREE.Line(pathGeo, pathMat);
-            scene.add(pathLine);
+            // 相机自动适配
+            const box = new THREE.Box3().setFromPoints(allPoints);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z) || 2000;
 
-            const flownGeo = new THREE.BufferGeometry().setFromPoints([pathPoints[0]]);
-            const flownMat = new THREE.LineBasicMaterial({ color: 0xff4444 });
-            const flownLine = new THREE.Line(flownGeo, flownMat);
-            scene.add(flownLine);
-
-            // ========== 视角控制 ==========
             let currentView = 'free';
             let followAircraft = false;
 
             function setCameraView(viewName) {
                 currentView = viewName;
                 followAircraft = (viewName === 'follow');
-                
-                const center = new THREE.Vector3();
-                const box = new THREE.Box3().setFromObject(pathLine);
-                box.getCenter(center);
-                const size = new THREE.Vector3();
-                box.getSize(size);
-                const maxDim = Math.max(size.x, size.y, size.z);
-
                 switch (viewName) {
                     case 'top':
-                        camera.position.set(center.x, maxDim * 1.5, center.z);
+                        camera.position.set(center.x, maxDim * 2.5, center.z);
                         camera.lookAt(center);
+                        controls.target.copy(center);
                         break;
                     case 'side':
-                        camera.position.set(center.x + maxDim * 1.5, center.y, center.z);
+                        camera.position.set(center.x + maxDim * 2, center.y, center.z);
                         camera.lookAt(center);
+                        controls.target.copy(center);
                         break;
                     case 'front':
-                        camera.position.set(center.x, center.y, center.z + maxDim * 1.5);
+                        camera.position.set(center.x, center.y, center.z + maxDim * 2);
                         camera.lookAt(center);
+                        controls.target.copy(center);
                         break;
-                    case 'free':
                     default:
-                        camera.position.set(center.x + maxDim, center.y + maxDim * 0.8, center.z + maxDim);
-                        camera.lookAt(center);
+                        camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+                        controls.target.copy(center);
                         break;
                 }
-            }
-
-            // ========== 【修正】标准姿态指示器（分界线版） ==========
-            const attitudeCanvas = document.getElementById('attitudeCanvas');
-            const actx = attitudeCanvas.getContext('2d');
-            const cx = attitudeCanvas.width / 2;
-            const cy = attitudeCanvas.height / 2;
-            const radius = cx - 30;
-            const PITCH_PER_DEG = 6;      // 每度俯仰像素位移
-
-            function drawAttitudeIndicator(pitchDeg, rollDeg, headingDeg) {
-                actx.clearRect(0, 0, attitudeCanvas.width, attitudeCanvas.height);
-                
-                // 圆形视窗裁剪
-                actx.save();
-                actx.beginPath();
-                actx.arc(cx, cy, radius, 0, Math.PI * 2);
-                actx.clip();
-
-                const pitchOffset = pitchDeg * PITCH_PER_DEG;
-
-                // 滚转旋转：绕中心旋转
-                actx.save();
-                actx.translate(cx, cy);
-                actx.rotate(-rollDeg * Math.PI / 180);
-
-                // 1. 天空背景（上）
-                actx.fillStyle = '#1e90ff';
-                actx.fillRect(-radius*2, -radius*2 + pitchOffset, radius*4, radius*2 - pitchOffset);
-                
-                // 2. 大地背景（下）
-                actx.fillStyle = '#8b4513';
-                actx.fillRect(-radius*2, pitchOffset, radius*4, radius*2 - pitchOffset);
-
-                // 3. 天地分界线（细白线，仅1像素，自然分界）
-                actx.strokeStyle = '#ffffff';
-                actx.lineWidth = 1;
-                actx.beginPath();
-                actx.moveTo(-radius*2, pitchOffset);
-                actx.lineTo(radius*2, pitchOffset);
-                actx.stroke();
-
-                // 4. 俯仰刻度线
-                actx.strokeStyle = '#ffffff';
-                actx.lineWidth = 2;
-                actx.font = 'bold 22px Arial';
-                actx.textAlign = 'center';
-                actx.fillStyle = '#ffffff';
-
-                for (let deg = -30; deg <= 30; deg += 10) {
-                    const y = deg * PITCH_PER_DEG + pitchOffset;
-                    if (y > -radius + 20 && y < radius - 20) {
-                        const lineLen = (deg % 20 === 0) ? 90 : 45;
-                        actx.beginPath();
-                        actx.moveTo(-lineLen, y);
-                        actx.lineTo(lineLen, y);
-                        actx.stroke();
-                        
-                        if (deg % 20 === 0 && deg !== 0) {
-                            const degText = Math.abs(deg).toString();
-                            actx.fillText(degText, -120, y + 7);
-                            actx.fillText(degText, 120, y + 7);
-                        }
-                    }
-                }
-
-                actx.restore(); // 结束滚转旋转
-                actx.restore(); // 结束圆形裁剪
-
-                // 5. 固定飞机基准符号（黄色，不随姿态转动）
-                actx.strokeStyle = '#ffff00';
-                actx.lineWidth = 5;
-                actx.lineCap = 'round';
-                
-                // 左右机翼
-                actx.beginPath();
-                actx.moveTo(cx - 100, cy);
-                actx.lineTo(cx - 25, cy);
-                actx.moveTo(cx + 25, cy);
-                actx.lineTo(cx + 100, cy);
-                actx.stroke();
-
-                // 中心圆点
-                actx.beginPath();
-                actx.arc(cx, cy, 10, 0, Math.PI * 2);
-                actx.fillStyle = '#ffff00';
-                actx.fill();
-
-                // 6. 顶部航向指示三角
-                actx.fillStyle = '#ffff00';
-                actx.beginPath();
-                actx.moveTo(cx, cy - radius + 15);
-                actx.lineTo(cx - 18, cy - radius + 45);
-                actx.lineTo(cx + 18, cy - radius + 45);
-                actx.closePath();
-                actx.fill();
-
-                // 7. 底部航向数值
-                actx.fillStyle = '#00ff00';
-                actx.font = 'bold 26px Arial';
-                actx.textAlign = 'center';
-                actx.fillText(`HDG ${Math.round(headingDeg)}°`, cx, cy + radius - 20);
-
-                // 8. 外边框
-                actx.strokeStyle = '#222';
-                actx.lineWidth = 8;
-                actx.beginPath();
-                actx.arc(cx, cy, radius, 0, Math.PI * 2);
-                actx.stroke();
+                controls.update();
             }
 
             // ========== 数据面板初始化 ==========
-            const metricsConfig = __METRICS_JSON__;
             const calculableCol = document.getElementById('calculableCol');
             const incalculableCol = document.getElementById('incalculableCol');
-            const valueElements = {};
 
-            function initDataPanel() {
-                for (const name in metricsConfig.calculable) {
-                    const cfg = metricsConfig.calculable[name];
-                    const key = cfg.key;
-                    const isHighOrder = cfg.diff_order >= 2;
-                    
-                    const item = document.createElement('div');
-                    item.className = 'data-item';
-                    item.innerHTML = `
-                        <div class="label-wrap">
-                            <span class="label">${name}</span>
-                            <span class="source">${cfg.source}</span>
-                        </div>
-                        <span class="value ${isHighOrder ? 'high-order' : ''}" id="val_${key}">--</span>
-                    `;
-                    calculableCol.appendChild(item);
-                    valueElements[key] = document.getElementById(`val_${key}`);
+            function buildDataPanels() {
+                // 可计算指标
+                const calcItems = metricsCheck.calculable;
+                for (const name in calcItems) {
+                    const info = calcItems[name];
+                    const div = document.createElement('div');
+                    div.className = 'data-item';
+                    div.id = 'metric-' + info.key;
+
+                    const labelWrap = document.createElement('div');
+                    labelWrap.className = 'label-wrap';
+                    const label = document.createElement('div');
+                    label.className = 'label';
+                    label.textContent = name;
+                    const source = document.createElement('div');
+                    source.className = 'source';
+                    source.textContent = info.source;
+                    labelWrap.appendChild(label);
+                    labelWrap.appendChild(source);
+
+                    const value = document.createElement('div');
+                    value.className = 'value' + (info.diff_order > 0 ? ' high-order' : '');
+                    value.dataset.key = info.key;
+                    value.dataset.unit = info.unit;
+                    value.textContent = '--';
+
+                    div.appendChild(labelWrap);
+                    div.appendChild(value);
+                    calculableCol.appendChild(div);
                 }
 
-                if (Object.keys(metricsConfig.calculable).length === 0) {
-                    calculableCol.innerHTML += '<div style="color:#666; font-size:12px;">暂无可显示数据</div>';
-                }
+                // 不可计算指标
+                const incalcItems = metricsCheck.incalculable;
+                for (const name in incalcItems) {
+                    const reasons = incalcItems[name];
+                    const div = document.createElement('div');
+                    div.className = 'data-item disabled';
 
-                for (const name in metricsConfig.incalculable) {
-                    const reasons = metricsConfig.incalculable[name];
-                    const item = document.createElement('div');
-                    item.className = 'data-item disabled';
-                    item.innerHTML = `
-                        <span class="label">${name}</span>
-                        <span class="value">${reasons[0]}</span>
-                    `;
-                    incalculableCol.appendChild(item);
-                }
+                    const labelWrap = document.createElement('div');
+                    labelWrap.className = 'label-wrap';
+                    const label = document.createElement('div');
+                    label.className = 'label';
+                    label.textContent = name;
+                    labelWrap.appendChild(label);
 
-                if (Object.keys(metricsConfig.incalculable).length === 0) {
-                    incalculableCol.innerHTML += '<div style="color:#666; font-size:12px;">全部数据可正常显示</div>';
-                }
-            }
+                    const value = document.createElement('div');
+                    value.className = 'value';
+                    value.textContent = reasons.join('；');
+                    value.style.fontSize = '11px';
+                    value.style.textAlign = 'right';
 
-            // ========== 数据更新 ==========
-            function updateDataValues(frame) {
-                if (valueElements.altitude) valueElements.altitude.textContent = frame.z.toFixed(1) + ' m';
-                if (valueElements.heading) valueElements.heading.textContent = frame.heading.toFixed(1) + ' °';
-                if (valueElements.pitch) valueElements.pitch.textContent = frame.pitch.toFixed(1) + ' °';
-                if (valueElements.roll) valueElements.roll.textContent = frame.roll.toFixed(1) + ' °';
-                if (valueElements.ground_speed) valueElements.ground_speed.textContent = frame.ground_speed.toFixed(2) + ' m/s';
-                if (valueElements.vertical_speed) valueElements.vertical_speed.textContent = frame.vertical_speed.toFixed(2) + ' m/s';
-                if (valueElements.distance) valueElements.distance.textContent = frame.distance.toFixed(1) + ' m';
-                if (valueElements.lat_lon) valueElements.lat_lon.textContent = frame.lat.toFixed(6) + ', ' + frame.lon.toFixed(6);
-
-                if (valueElements.vg_total) valueElements.vg_total.textContent = frame.vg_total.toFixed(2) + ' m/s';
-                if (valueElements.flight_path_angle) valueElements.flight_path_angle.textContent = frame.flight_path_angle.toFixed(2) + ' °';
-                
-                if (valueElements.velocity_components) {
-                    valueElements.velocity_components.innerHTML = 
-                        `E: ${frame.ve.toFixed(2)}<br>N: ${frame.vn.toFixed(2)}<br>U: ${frame.vu.toFixed(2)}`;
-                    valueElements.velocity_components.classList.add('multi-line');
-                }
-
-                if (valueElements.attitude_rates) {
-                    valueElements.attitude_rates.innerHTML = 
-                        `航向: ${frame.vheading.toFixed(2)}<br>俯仰: ${frame.vpitch.toFixed(2)}<br>滚转: ${frame.vroll.toFixed(2)}`;
-                    valueElements.attitude_rates.classList.add('multi-line');
-                }
-
-                if (valueElements.acceleration_components) {
-                    valueElements.acceleration_components.innerHTML = 
-                        `E: ${frame.ae.toFixed(3)}<br>N: ${frame.an.toFixed(3)}<br>U: ${frame.au.toFixed(3)}`;
-                    valueElements.acceleration_components.classList.add('multi-line');
-                }
-
-                if (valueElements.flight_status) {
-                    valueElements.flight_status.textContent = frame.flight_status;
+                    div.appendChild(labelWrap);
+                    div.appendChild(value);
+                    incalculableCol.appendChild(div);
                 }
             }
+            buildDataPanels();
 
-            // ========== 帧更新主逻辑 ==========
+            // 控件绑定
+            const playBtn = document.getElementById('playBtn');
+            const speedSelect = document.getElementById('speedSelect');
+            const frameSlider = document.getElementById('frameSlider');
+            const viewSelect = document.getElementById('viewSelect');
+            const frameText = document.getElementById('frameText');
+
+            // 坐标系开关
+            const showAircraftAxis = document.getElementById('showAircraftAxis');
+            const showHorizonAxis = document.getElementById('showHorizonAxis');
+            showAircraftAxis.addEventListener('change', e => {
+                aircraftAxis.visible = e.target.checked;
+            });
+            showHorizonAxis.addEventListener('change', e => {
+                horizonGroup.visible = e.target.checked;
+            });
+
             let currentFrame = 0;
             let isPlaying = false;
-            let playSpeed = 1;
+            let speed = 1;
             let lastTime = null;
             const frameInterval = 100;
 
-            function updateFrame(idx) {
-                currentFrame = Math.max(0, Math.min(totalFrames - 1, idx));
+            function updateFrame() {
                 const frame = frames[currentFrame];
+                const pos = enu2three(frame.x, frame.y, frame.z);
 
-                aircraftGroup.position.set(frame.x, frame.z, -frame.y);
-                horizonGroup.position.set(frame.x, frame.z, -frame.y);
+                aircraftGroup.position.copy(pos);
+                horizonGroup.position.copy(pos);
 
-                const headingRad = (90 - frame.heading) * Math.PI / 180;
-                const pitchRad = frame.pitch * Math.PI / 180;
-                const rollRad = frame.roll * Math.PI / 180;
-                
+                // 原始姿态计算
+                const h = THREE.MathUtils.degToRad(90 - frame.heading);
+                const p = THREE.MathUtils.degToRad(frame.pitch);
+                const r = THREE.MathUtils.degToRad(frame.roll);
+
                 aircraftGroup.rotation.order = 'YZX';
-                aircraftGroup.rotation.y = headingRad;
-                aircraftGroup.rotation.z = pitchRad;
-                aircraftGroup.rotation.x = -rollRad;
+                aircraftGroup.rotation.y = h;
+                aircraftGroup.rotation.z = p;
+                aircraftGroup.rotation.x = r;
 
-                const flownPoints = pathPoints.slice(0, currentFrame + 1);
+                horizonGroup.rotation.y = h;
+
+                // 更新已飞轨迹
+                const flownPts = allPoints.slice(0, currentFrame + 1);
                 flownLine.geometry.dispose();
-                flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPoints);
-
-                drawAttitudeIndicator(frame.pitch, frame.roll, frame.heading);
-                updateDataValues(frame);
-
-                document.getElementById('frameSlider').value = currentFrame;
-                document.getElementById('frameText').textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
+                flownLine.geometry = new THREE.BufferGeometry().setFromPoints(flownPts);
 
                 if (followAircraft) {
-                    const offset = new THREE.Vector3(-300, 200, 0);
-                    offset.applyQuaternion(aircraftGroup.quaternion);
-                    camera.position.copy(aircraftGroup.position).add(offset);
-                    camera.lookAt(aircraftGroup.position);
+                    controls.target.copy(pos);
                 }
+
+                // 更新文本数值
+                frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
+                frameSlider.value = currentFrame;
+
+                // 更新数据面板数值
+                const valueEls = calculableCol.querySelectorAll('.value');
+                valueEls.forEach(el => {
+                    const key = el.dataset.key;
+                    const unit = el.dataset.unit;
+                    let val = frame[key];
+
+                    if (key === 'lat_lon') {
+                        val = `${frame.lat.toFixed(4)}°N\n${frame.lon.toFixed(4)}°E`;
+                        el.classList.add('multi-line');
+                    } else if (key === 'velocity_components') {
+                        val = `东向 ${frame.ve.toFixed(2)}\n北向 ${frame.vn.toFixed(2)}\n垂向 ${frame.vu.toFixed(2)}`;
+                        el.classList.add('multi-line');
+                    } else if (key === 'attitude_rates') {
+                        val = `航向率 ${frame.vheading.toFixed(2)}\n俯仰率 ${frame.vpitch.toFixed(2)}\n滚转率 ${frame.vroll.toFixed(2)}`;
+                        el.classList.add('multi-line');
+                    } else if (key === 'acceleration_components') {
+                        val = `东向 ${frame.ae.toFixed(2)}\n北向 ${frame.an.toFixed(2)}\n垂向 ${frame.au.toFixed(2)}`;
+                        el.classList.add('multi-line');
+                    } else if (key === 'flight_status') {
+                        val = frame.flight_status;
+                    } else {
+                        val = Number(val).toFixed(2) + unit;
+                    }
+                    el.textContent = val;
+                });
+
+                // 更新姿态仪表
+                drawAttitudeIndicator(frame.pitch, frame.roll, frame.heading);
             }
 
+            playBtn.addEventListener('click', function() {
+                if (currentFrame >= totalFrames - 1) currentFrame = 0;
+                isPlaying = !isPlaying;
+                lastTime = null;
+                playBtn.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
+            });
+
+            speedSelect.addEventListener('change', e => {
+                speed = parseFloat(e.target.value);
+                lastTime = null;
+            });
+
+            frameSlider.addEventListener('input', e => {
+                currentFrame = parseInt(e.target.value);
+                isPlaying = false;
+                playBtn.textContent = '▶️ 播放';
+                updateFrame();
+            });
+
+            viewSelect.addEventListener('change', e => {
+                setCameraView(e.target.value);
+                updateFrame();
+            });
+
+            // 动画循环
             function animate(time) {
                 requestAnimationFrame(animate);
-                
                 if (isPlaying) {
-                    if (lastTime === null) lastTime = time;
-                    const delta = time - lastTime;
-                    if (delta > frameInterval / playSpeed) {
+                    if (lastTime === null) {
                         lastTime = time;
-                        if (currentFrame < totalFrames - 1) {
-                            updateFrame(currentFrame + 1);
-                        } else {
-                            isPlaying = false;
-                            document.getElementById('playBtn').textContent = '▶️ 播放';
+                    } else {
+                        const delta = time - lastTime;
+                        if (delta > frameInterval / speed) {
+                            lastTime = time;
+                            if (currentFrame < totalFrames - 1) {
+                                currentFrame++;
+                                updateFrame();
+                            } else {
+                                isPlaying = false;
+                                playBtn.textContent = '▶️ 播放';
+                            }
                         }
                     }
                 }
-
+                controls.update();
                 renderer.render(scene, camera);
             }
 
-            // ========== 事件绑定 ==========
-            document.getElementById('playBtn').addEventListener('click', function() {
-                if (currentFrame >= totalFrames - 1) {
-                    updateFrame(0);
-                }
-                isPlaying = !isPlaying;
-                lastTime = null;
-                this.textContent = isPlaying ? '⏸️ 暂停' : '▶️ 播放';
-            });
-
-            document.getElementById('speedSelect').addEventListener('change', function(e) {
-                playSpeed = parseFloat(e.target.value);
-                lastTime = null;
-            });
-
-            document.getElementById('frameSlider').addEventListener('input', function(e) {
-                updateFrame(parseInt(e.target.value));
-                isPlaying = false;
-                document.getElementById('playBtn').textContent = '▶️ 播放';
-            });
-
-            document.getElementById('viewSelect').addEventListener('change', function(e) {
-                setCameraView(e.target.value);
-            });
-
-            document.getElementById('showAircraftAxis').addEventListener('change', function(e) {
-                aircraftAxis.visible = e.target.checked;
-            });
-
-            document.getElementById('showHorizonAxis').addEventListener('change', function(e) {
-                horizonAxis.visible = e.target.checked;
-            });
-
-            window.addEventListener('resize', function() {
+            window.addEventListener('resize', () => {
                 camera.aspect = container.clientWidth / container.clientHeight;
                 camera.updateProjectionMatrix();
                 renderer.setSize(container.clientWidth, container.clientHeight);
             });
 
-            // ========== 初始化 ==========
-            initDataPanel();
+            // 初始化
             setCameraView('free');
-            updateFrame(0);
+            updateFrame();
             animate(0);
-            document.getElementById('error-tip').style.display = 'none';
+            document.getElementById('error-tip').innerText = '';
 
         } catch (e) {
-            document.getElementById('error-tip').innerText = '初始化错误: ' + e.message;
+            document.getElementById('error-tip').innerText = '渲染错误: ' + e.message;
             console.error(e);
         }
     };
@@ -1024,7 +1128,7 @@ if len(frames_data) > 0:
     html_template = html_template.replace("__TOTAL__", str(total - 1))
     html_template = html_template.replace("__TOTAL_PLUS_ONE__", str(total))
 
-    components.html(html_template, height=900, scrolling=False)
+    components.html(html_template, height=1080, scrolling=False)
 
 else:
-    st.info("👈 请在左侧侧边栏输入CSV数据，点击「加载数据」开始可视化")
+    st.info("👈 请在左侧侧边栏输入CSV数据，点击【加载数据】开始可视化")
