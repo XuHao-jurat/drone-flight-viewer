@@ -711,43 +711,45 @@ if len(frames_data) > 0:
                 }
             }
 
-            // ========== 【修正】标准姿态指示器绘制 ==========
+            // ========== 【修正】标准姿态指示器（分界线版） ==========
             const attitudeCanvas = document.getElementById('attitudeCanvas');
             const actx = attitudeCanvas.getContext('2d');
             const cx = attitudeCanvas.width / 2;
             const cy = attitudeCanvas.height / 2;
             const radius = cx - 30;
-            const PITCH_PER_DEG = 6;      // 每度俯仰对应的像素位移
-            const HORIZON_HEIGHT = 16;   // 黑色地平线高度
+            const PITCH_PER_DEG = 6;      // 每度俯仰像素位移
 
             function drawAttitudeIndicator(pitchDeg, rollDeg, headingDeg) {
                 actx.clearRect(0, 0, attitudeCanvas.width, attitudeCanvas.height);
                 
-                // 圆形裁剪
+                // 圆形视窗裁剪
                 actx.save();
                 actx.beginPath();
                 actx.arc(cx, cy, radius, 0, Math.PI * 2);
                 actx.clip();
 
-                // 俯仰偏移量：抬头向上移，低头向下移
                 const pitchOffset = pitchDeg * PITCH_PER_DEG;
 
-                // 滚转旋转：绕中心旋转，正滚转=右机翼向下
+                // 滚转旋转：绕中心旋转
                 actx.save();
                 actx.translate(cx, cy);
                 actx.rotate(-rollDeg * Math.PI / 180);
 
-                // 1. 天空背景（上半部分）
+                // 1. 天空背景（上）
                 actx.fillStyle = '#1e90ff';
                 actx.fillRect(-radius*2, -radius*2 + pitchOffset, radius*4, radius*2 - pitchOffset);
                 
-                // 2. 大地背景（下半部分）
+                // 2. 大地背景（下）
                 actx.fillStyle = '#8b4513';
                 actx.fillRect(-radius*2, pitchOffset, radius*4, radius*2 - pitchOffset);
 
-                // 3. 黑色地平线（核心修正）
-                actx.fillStyle = '#000000';
-                actx.fillRect(-radius*2, pitchOffset - HORIZON_HEIGHT/2, radius*4, HORIZON_HEIGHT);
+                // 3. 天地分界线（细白线，仅1像素，自然分界）
+                actx.strokeStyle = '#ffffff';
+                actx.lineWidth = 1;
+                actx.beginPath();
+                actx.moveTo(-radius*2, pitchOffset);
+                actx.lineTo(radius*2, pitchOffset);
+                actx.stroke();
 
                 // 4. 俯仰刻度线
                 actx.strokeStyle = '#ffffff';
