@@ -20,7 +20,7 @@ def ll2local_enu(lat0, lon0, lat, lon, alt):
     up = alt
     return east, north, up
 
-# ===================== CSV解析（稳定版，完全未改动） =====================
+# ===================== CSV解析（完全未改动） =====================
 def parse_csv_data(csv_string):
     lines = csv_string.strip().splitlines()
     cleaned_lines = [line.strip() for line in lines if line.strip()]
@@ -101,7 +101,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染（新增坐标系开关，核心逻辑完全不动） =====================
+# ===================== 3D渲染 + 新增姿态仪表 =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     total = len(frames_data)
@@ -156,10 +156,35 @@ if len(frames_data) > 0:
         button { padding:6px 16px; cursor:pointer; background:#2d6cdf; border:none; color:#fff; border-radius:4px; }
         button:hover { background:#3b7eea; }
         select, input[type=range] { padding:4px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; }
+        
+        /* 姿态仪表面板 */
+        .attitude-panel {
+            position:absolute; top:112px; right:20px; width:260px;
+            background:rgba(0,0,0,0.8); padding:10px 12px; border-radius:8px;
+            z-index:10;
+            text-align:center;
+            border: 1px solid #333;
+        }
+        .attitude-panel canvas {
+            width: 240px;
+            height: 240px;
+            border-radius: 50%;
+            background: #000;
+            display:block;
+            margin:0 auto;
+        }
+        .attitude-title {
+            font-size:13px;
+            color:#aaa;
+            margin-bottom:8px;
+            text-align:left;
+        }
+
         .info-panel {
-            position:absolute; top:112px; right:20px; width:180px;
+            position:absolute; top:370px; right:20px; width:260px;
             background:rgba(0,0,0,0.75); padding:15px; border-radius:8px;
             font-size:14px; line-height:2; z-index:10;
+            border: 1px solid #333;
         }
         #error-tip {
             position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
@@ -208,6 +233,12 @@ if len(frames_data) > 0:
     </div>
 
     <div id="canvas-container">
+        <!-- 新增姿态地平仪 -->
+        <div class="attitude-panel">
+            <div class="attitude-title">姿态指示器 ADI</div>
+            <canvas id="attitudeCanvas" width="480" height="480"></canvas>
+        </div>
+
         <div class="info-panel">
             <div>高度 Altitude: <span id="altVal">0</span> m</div>
             <div>航向 Heading: <span id="hdgVal">0</span> °</div>
@@ -224,7 +255,7 @@ if len(frames_data) > 0:
                 return;
             }
 
-            // ========== 轨道控制器 ==========
+            // ========== 轨道控制器（完全未改动） ==========
             THREE.OrbitControls = function ( object, domElement ) {
                 this.object = object;
                 this.domElement = domElement;
@@ -296,7 +327,103 @@ if len(frames_data) > 0:
                 domElement.addEventListener( 'wheel', onMouseWheel, false );
             };
 
-            // ========== 主渲染逻辑 ==========
+            // ========== 姿态地平仪绘制（新增，纯Canvas2D，不影响3D） ==========
+            const attitudeCanvas = document.getElementById('attitudeCanvas');
+            const actx = attitudeCanvas.getContext('2d');
+            const acx = attitudeCanvas.width / 2;
+            const acy = attitudeCanvas.height / 2;
+            const aradius = acx - 10;
+
+            function drawAttitudeIndicator(pitchDeg, rollDeg, headingDeg) {
+                actx.clearRect(0, 0, attitudeCanvas.width, attitudeCanvas.height);
+
+                // 圆形裁剪
+                actx.save();
+                actx.beginPath();
+                actx.arc(acx, acy, aradius, 0, Math.PI * 2);
+                actx.clip();
+
+                // 滚转旋转
+                actx.save();
+                actx.translate(acx, acy);
+                actx.rotate(rollDeg * Math.PI / 180);
+
+                // 俯仰偏移：每度对应6像素
+                const pitchPx = pitchDeg * 6;
+
+                // 天空
+                actx.fillStyle = '#1e90ff';
+                actx.fillRect(-aradius*2, -aradius*2, aradius*4, aradius*2 + pitchPx);
+
+                // 地面
+                actx.fillStyle = '#8b4513';
+                actx.fillRect(-aradius*2, pitchPx, aradius*4, aradius*4 - pitchPx);
+
+                // 地平线
+                actx.strokeStyle = '#ffffff';
+                actx.lineWidth = 3;
+                actx.beginPath();
+                actx.moveTo(-aradius*2, pitchPx);
+                actx.lineTo(aradius*2, pitchPx);
+                actx.stroke();
+
+                // 俯仰刻度线 + 数值
+                actx.strokeStyle = '#ffffff';
+                actx.lineWidth = 2;
+                actx.font = 'bold 22px Arial';
+                actx.textAlign = 'center';
+                actx.fillStyle = '#ffffff';
+                for (let i = -30; i <= 30; i += 5) {
+                    const y = pitchPx - i * 6;
+                    if (y < -aradius + 20 || y > aradius - 20) continue;
+                    const len = i % 10 === 0 ? 50 : 25;
+                    actx.beginPath();
+                    actx.moveTo(-len, y);
+                    actx.lineTo(len, y);
+                    actx.stroke();
+                    if (i % 10 === 0 && i !== 0) {
+                        actx.fillText(Math.abs(i).toString(), -70, y + 7);
+                        actx.fillText(Math.abs(i).toString(), 70, y + 7);
+                    }
+                }
+
+                actx.restore();
+                actx.restore();
+
+                // 固定飞机基准符号（不随姿态旋转，黄色）
+                actx.save();
+                actx.translate(acx, acy);
+                actx.strokeStyle = '#ffff00';
+                actx.fillStyle = '#ffff00';
+                actx.lineWidth = 4;
+                // 左右机翼
+                actx.beginPath();
+                actx.moveTo(-90, 0);
+                actx.lineTo(-20, 0);
+                actx.moveTo(20, 0);
+                actx.lineTo(90, 0);
+                actx.stroke();
+                // 中心圆点
+                actx.beginPath();
+                actx.arc(0, 0, 7, 0, Math.PI * 2);
+                actx.fill();
+                // 顶部航向三角标记
+                actx.beginPath();
+                actx.moveTo(0, -aradius + 18);
+                actx.lineTo(-14, -aradius + 40);
+                actx.lineTo(14, -aradius + 40);
+                actx.closePath();
+                actx.fill();
+                actx.restore();
+
+                // 底部航向数值
+                actx.fillStyle = '#00ff00';
+                actx.font = 'bold 22px Arial';
+                actx.textAlign = 'center';
+                actx.fillText(`HDG ${headingDeg.toFixed(0)}°`, acx, acy + aradius - 25);
+            }
+
+            // ========== 主渲染逻辑（完全未改动） ==========
             const frames = __DATA_JSON__;
             const totalFrames = frames.length;
 
@@ -483,6 +610,9 @@ if len(frames_data) > 0:
                 rolVal.textContent = frame.roll.toFixed(1);
                 frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
                 frameSlider.value = currentFrame;
+
+                // 更新姿态仪表
+                drawAttitudeIndicator(frame.pitch, frame.roll, frame.heading);
             }
 
             playBtn.addEventListener('click', function() {
