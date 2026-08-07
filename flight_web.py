@@ -252,6 +252,7 @@ if len(frames_data) > 0:
                 <option value="side">侧视图</option>
                 <option value="front">前视图</option>
                 <option value="follow">跟随飞机视角</option>
+                <option value="firstPerson">第一人称驾驶</option>
             </select>
         </label>
         <label><input type="checkbox" id="showAircraftAxis" checked> 机体坐标系</label>
@@ -467,31 +468,52 @@ if len(frames_data) > 0:
             let followAircraft = false;
 
             function setCameraView(viewName) {
-                currentView = viewName;
-                followAircraft = (viewName === 'follow');
-                switch (viewName) {
-                    case 'top':
-                        camera.position.set(center.x, maxDim * 2.5, center.z);
-                        camera.lookAt(center);
-                        controls.target.copy(center);
-                        break;
-                    case 'side':
-                        camera.position.set(center.x + maxDim * 2, center.y, center.z);
-                        camera.lookAt(center);
-                        controls.target.copy(center);
-                        break;
-                    case 'front':
-                        camera.position.set(center.x, center.y, center.z + maxDim * 2);
-                        camera.lookAt(center);
-                        controls.target.copy(center);
-                        break;
-                    default:
-                        camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
-                        controls.target.copy(center);
-                        break;
-                }
-                controls.update();
-            }
+    currentView = viewName;
+    followAircraft = (viewName === 'follow');
+
+    // 切换视角前先把相机从飞机组移出，恢复到场景根节点
+    if (camera.parent === aircraftGroup) {
+        aircraftGroup.remove(camera);
+        scene.add(camera);
+    }
+
+    switch (viewName) {
+        case 'top':
+            camera.position.set(center.x, maxDim * 2.5, center.z);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            break;
+        case 'side':
+            camera.position.set(center.x + maxDim * 2, center.y, center.z);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            break;
+        case 'front':
+            camera.position.set(center.x, center.y, center.z + maxDim * 2);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            break;
+        case 'follow':
+            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            break;
+        case 'firstPerson':
+            // 把相机挂载到飞机组，放在机头前方，自动同步所有姿态
+            scene.remove(camera);
+            aircraftGroup.add(camera);
+            // 机头正前方，高度和驾驶舱齐平
+            camera.position.set(80, 15, 0);
+            camera.lookAt(1000, 15, 0);
+            break;
+        default:
+            camera.position.set(center.x + maxDim * 1.2, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            break;
+    }
+    controls.update();
+}
 
             // ========== 控件绑定 ==========
             const playBtn = document.getElementById('playBtn');
