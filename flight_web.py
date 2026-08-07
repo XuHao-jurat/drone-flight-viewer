@@ -52,51 +52,91 @@ def parse_csv_data(csv_string):
         raise ValueError("有效数据行为0")
     return df
 
-# ===================== 【新增】飞行指标校验配置 =====================
+# ===================== 【扩展】飞行指标校验配置（原有8项+新增5项） =====================
 METRIC_CONFIG = {
+    # ---------- 原有指标 ----------
     "当前高度": {
+        "key": "altitude",
         "required_fields": ["altitude"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "m"
     },
     "当前航向": {
+        "key": "heading",
         "required_fields": ["heading"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "°"
     },
     "俯仰角": {
+        "key": "pitch",
         "required_fields": ["pitch"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "°"
     },
     "滚转角": {
+        "key": "roll",
         "required_fields": ["roll"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "°"
     },
     "地速(水平速度)": {
+        "key": "ground_speed",
         "required_fields": ["latitude", "longitude"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "m/s"
     },
     "升降速度": {
+        "key": "vertical_speed",
         "required_fields": ["altitude"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "m/s"
     },
     "累计飞行航程": {
+        "key": "distance",
         "required_fields": ["latitude", "longitude"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": "m"
     },
     "当前经纬度": {
+        "key": "lat_lon",
         "required_fields": ["latitude", "longitude"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": ""
+    },
+    # ---------- 【新增5项指标】 ----------
+    "合地速 Vg": {
+        "key": "vg_total",
+        "required_fields": ["ve", "vn", "vu"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "m/s"
+    },
+    "航迹角 γ": {
+        "key": "flight_path_angle",
+        "required_fields": ["ve", "vn", "vu"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "°"
+    },
+    "地速分量面板": {
+        "key": "velocity_components",
+        "required_fields": ["ve", "vn", "vu"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "m/s"
+    },
+    "姿态角速度面板": {
+        "key": "attitude_rates",
+        "required_fields": ["vheading", "vpitch", "vroll"],
+        "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
+        "unit": "°/s"
+    },
+    "飞行状态判断": {
+        "key": "flight_status",
+        "required_fields": ["vu", "vheading", "vroll"],
         "rules": {"allow_null": False, "allow_zero": True, "required_type": "number"},
         "unit": ""
     }
 }
 
-# ===================== 【新增】指标可计算性校验函数 =====================
+# ===================== 指标可计算性校验函数（完全未改动） =====================
 def validate_calculable_metrics(df: pd.DataFrame, config: dict, min_valid_ratio: float = 0.1) -> dict:
     result = {"calculable": {}, "incalculable": {}}
     total_rows = len(df)
@@ -129,40 +169,80 @@ def validate_calculable_metrics(df: pd.DataFrame, config: dict, min_valid_ratio:
         if errors:
             result["incalculable"][metric_name] = errors
         else:
-            result["calculable"][metric_name] = {"unit": cfg["unit"]}
+            result["calculable"][metric_name] = {
+                "unit": cfg["unit"],
+                "key": cfg["key"]
+            }
     return result
 
-# ===================== 【新增】预计算衍生运动数据 =====================
+# ===================== 【扩展】预计算衍生运动数据（原有逻辑保留+新增5项计算） =====================
 def calc_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     R = 6371000
     lat_rad = np.radians(df["latitude"])
     lon_rad = np.radians(df["longitude"])
     
-    # 相邻帧水平距离（米）
+    # ---------- 原有计算逻辑 完全保留 ----------
     dlat = np.diff(lat_rad, prepend=lat_rad.iloc[0])
     dlon = np.diff(lon_rad, prepend=lon_rad.iloc[0])
     a = np.sin(dlat/2)**2 + np.cos(lat_rad) * np.cos(lat_rad.shift(1).fillna(lat_rad.iloc[0])) * np.sin(dlon/2)**2
     c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
     df["_dist_step"] = R * c
-    
-    # 累计航程
     df["distance"] = np.cumsum(df["_dist_step"])
     
-    # 默认帧间隔100ms（与前端播放帧率一致），若有time字段则用真实时间差
     if "time" in df.columns and pd.api.types.is_numeric_dtype(df["time"]):
         dt = np.diff(df["time"], prepend=df["time"].iloc[0])
         dt[dt == 0] = 0.1
     else:
         dt = 0.1
     
-    # 地速 m/s
     df["ground_speed"] = df["_dist_step"] / dt
     df.loc[0, "ground_speed"] = 0
-    
-    # 升降速度 m/s
     df["vertical_speed"] = np.diff(df["altitude"], prepend=df["altitude"].iloc[0]) / dt
     df.loc[0, "vertical_speed"] = 0
+
+    # ---------- 【新增】地速相关衍生计算 ----------
+    has_vel = all(col in df.columns for col in ['ve', 'vn', 'vu'])
+    if has_vel:
+        # 合地速 Vg = 三轴速度矢量模
+        df["vg_total"] = np.sqrt(df["ve"]**2 + df["vn"]**2 + df["vu"]**2)
+        # 水平面速度
+        v_horizontal = np.sqrt(df["ve"]**2 + df["vn"]**2)
+        # 航迹角 γ = arctan(垂直速度/水平速度)，转角度
+        df["flight_path_angle"] = np.degrees(np.arctan2(df["vu"], v_horizontal))
+    else:
+        df["vg_total"] = 0
+        df["flight_path_angle"] = 0
+
+    # ---------- 【新增】飞行状态判断 ----------
+    has_status_fields = all(col in df.columns for col in ['vu', 'vheading', 'vroll'])
+    if has_status_fields:
+        # 阈值定义：可根据实际数据调整
+        VERTICAL_THRESHOLD = 0.5    # 垂直速度阈值 m/s
+        RATE_THRESHOLD = 1.5        # 姿态角速度阈值 °/s
+        
+        status_list = []
+        for _, row in df.iterrows():
+            vu = row['vu']
+            vh = row['vheading']
+            vr = row['vroll']
+            
+            states = []
+            # 垂直状态
+            if abs(vu) < VERTICAL_THRESHOLD:
+                states.append("平飞")
+            elif vu > 0:
+                states.append("上升")
+            else:
+                states.append("下降")
+            # 转弯状态
+            if abs(vh) > RATE_THRESHOLD or abs(vr) > RATE_THRESHOLD:
+                states.append("机动")
+            # 组合状态
+            status_list.append("·".join(states))
+        df["flight_status"] = status_list
+    else:
+        df["flight_status"] = "--"
     
     return df
 
@@ -196,10 +276,10 @@ if load_btn:
         
         df = parse_csv_data(raw_text)
         
-        # 【新增】执行指标校验
+        # 执行指标校验（自动覆盖新增5项）
         metrics_check = validate_calculable_metrics(df, METRIC_CONFIG)
         
-        # 【新增】预计算衍生数据
+        # 预计算衍生数据
         df = calc_derived_metrics(df)
         
         lat0 = df["latitude"].iloc[0]
@@ -208,24 +288,36 @@ if load_btn:
         for idx, row in df.iterrows():
             e, n, u = ll2local_enu(lat0, lon0, row["latitude"], row["longitude"], row["altitude"])
             frame_item = {
+                # 原有核心字段
                 "x": float(e),
                 "y": float(n),
                 "z": float(u),
                 "heading": float(row["heading"]),
                 "pitch": float(row["pitch"]),
                 "roll": float(row["roll"]),
-                # 【新增】衍生字段，没有则为0
                 "ground_speed": float(row.get("ground_speed", 0)),
                 "vertical_speed": float(row.get("vertical_speed", 0)),
                 "distance": float(row.get("distance", 0)),
                 "lat": float(row["latitude"]),
-                "lon": float(row["longitude"])
+                "lon": float(row["longitude"]),
+                # 【新增】原始速度分量字段
+                "ve": float(row.get("ve", 0)),
+                "vn": float(row.get("vn", 0)),
+                "vu": float(row.get("vu", 0)),
+                # 【新增】原始姿态角速度字段
+                "vheading": float(row.get("vheading", 0)),
+                "vpitch": float(row.get("vpitch", 0)),
+                "vroll": float(row.get("vroll", 0)),
+                # 【新增】计算衍生字段
+                "vg_total": float(row.get("vg_total", 0)),
+                "flight_path_angle": float(row.get("flight_path_angle", 0)),
+                "flight_status": str(row.get("flight_status", "--"))
             }
             frames_data.append(frame_item)
             
         st.success(f"数据加载成功，共 {len(frames_data)} 帧")
         
-        # 【新增】侧边栏展示校验结果
+        # 侧边栏展示校验结果
         st.subheader("📊 数据可用性校验")
         if metrics_check["calculable"]:
             st.write("✅ 可正常显示的数据：")
@@ -243,7 +335,7 @@ if load_btn:
         import traceback
         st.code(traceback.format_exc())
 
-# ===================== 3D渲染 + 底部仪表条（核心逻辑完全未改动，仅新增布局） =====================
+# ===================== 3D渲染 + 底部仪表条 =====================
 if len(frames_data) > 0:
     data_json = json.dumps(frames_data, ensure_ascii=False)
     metrics_json = json.dumps(metrics_check, ensure_ascii=False)
@@ -300,7 +392,6 @@ if len(frames_data) > 0:
         button:hover { background:#3b7eea; }
         select, input[type=range] { padding:4px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; }
         
-        /* 主3D视图区域 */
         #canvas-container { 
             flex:1;
             width:100%; 
@@ -308,7 +399,7 @@ if len(frames_data) > 0:
             position:relative;
         }
         
-        /* 【新增】方案B 底部横向仪表条 */
+        /* 底部横向仪表条 */
         .bottom-instrument-bar {
             height: 260px;
             flex-shrink: 0;
@@ -319,7 +410,6 @@ if len(frames_data) > 0:
             gap: 20px;
         }
         
-        /* 姿态指示器容器 */
         .attitude-wrap {
             width: 240px;
             flex-shrink: 0;
@@ -342,7 +432,6 @@ if len(frames_data) > 0:
             border: 2px solid #444;
         }
         
-        /* 数据状态面板 */
         .data-panel {
             flex: 1;
             display: flex;
@@ -375,6 +464,12 @@ if len(frames_data) > 0:
         .data-item .value { color: #00ff00; font-weight: bold; }
         .data-item.disabled { opacity: 0.5; }
         .data-item.disabled .value { color: #888; font-size: 11px; font-weight: normal; }
+        /* 新增：多行数值面板样式 */
+        .data-item .value.multi-line {
+            text-align: right;
+            line-height: 1.6;
+            font-size: 12px;
+        }
 
         #error-tip {
             position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
@@ -418,7 +513,6 @@ if len(frames_data) > 0:
 
     <div id="canvas-container"></div>
 
-    <!-- 【新增】底部仪表条 -->
     <div class="bottom-instrument-bar">
         <div class="attitude-wrap">
             <div class="title">姿态指示器 ADI</div>
@@ -514,7 +608,7 @@ if len(frames_data) > 0:
                 domElement.addEventListener( 'wheel', onMouseWheel, false );
             };
 
-            // ========== 【新增】姿态地平仪绘制 ==========
+            // ========== 姿态地平仪绘制（完全未改动） ==========
             const attitudeCanvas = document.getElementById('attitudeCanvas');
             const actx = attitudeCanvas.getContext('2d');
             const acx = attitudeCanvas.width / 2;
@@ -594,29 +688,29 @@ if len(frames_data) > 0:
                 actx.fillText(`HDG ${headingDeg.toFixed(0)}°`, acx, acy + aradius - 20);
             }
 
-            // ========== 【新增】数据面板动态渲染 ==========
+            // ========== 数据面板动态渲染（逻辑未变，自动兼容新增项） ==========
             const metricsConfig = __METRICS_JSON__;
             const calculableCol = document.getElementById('calculableCol');
             const incalculableCol = document.getElementById('incalculableCol');
             const valueElements = {};
 
             function initDataPanel() {
-                // 可计算数据项
                 for (const name in metricsConfig.calculable) {
+                    const cfg = metricsConfig.calculable[name];
+                    const key = cfg.key;
                     const item = document.createElement('div');
                     item.className = 'data-item';
                     item.innerHTML = `
                         <span class="label">${name}</span>
-                        <span class="value" id="val_${name.replace(/[^\w]/g,'_')}">--</span>
+                        <span class="value" id="val_${key}">--</span>
                     `;
                     calculableCol.appendChild(item);
-                    valueElements[name] = document.getElementById(`val_${name.replace(/[^\w]/g,'_')}`);
+                    valueElements[key] = document.getElementById(`val_${key}`);
                 }
                 if (Object.keys(metricsConfig.calculable).length === 0) {
                     calculableCol.innerHTML += '<div style="color:#666; font-size:12px;">暂无可显示数据</div>';
                 }
 
-                // 不可计算数据项
                 for (const name in metricsConfig.incalculable) {
                     const reasons = metricsConfig.incalculable[name];
                     const item = document.createElement('div');
@@ -632,15 +726,40 @@ if len(frames_data) > 0:
                 }
             }
 
+            // ========== 【扩展】数据更新（原有8项+新增5项） ==========
             function updateDataValues(frame) {
-                if (valueElements['当前高度']) valueElements['当前高度'].textContent = frame.z.toFixed(1) + ' m';
-                if (valueElements['当前航向']) valueElements['当前航向'].textContent = frame.heading.toFixed(1) + ' °';
-                if (valueElements['俯仰角']) valueElements['俯仰角'].textContent = frame.pitch.toFixed(1) + ' °';
-                if (valueElements['滚转角']) valueElements['滚转角'].textContent = frame.roll.toFixed(1) + ' °';
-                if (valueElements['地速(水平速度)']) valueElements['地速(水平速度)'].textContent = frame.ground_speed.toFixed(2) + ' m/s';
-                if (valueElements['升降速度']) valueElements['升降速度'].textContent = frame.vertical_speed.toFixed(2) + ' m/s';
-                if (valueElements['累计飞行航程']) valueElements['累计飞行航程'].textContent = frame.distance.toFixed(1) + ' m';
-                if (valueElements['当前经纬度']) valueElements['当前经纬度'].textContent = frame.lat.toFixed(6) + ', ' + frame.lon.toFixed(6);
+                // ---------- 原有数据项 ----------
+                if (valueElements.altitude) valueElements.altitude.textContent = frame.z.toFixed(1) + ' m';
+                if (valueElements.heading) valueElements.heading.textContent = frame.heading.toFixed(1) + ' °';
+                if (valueElements.pitch) valueElements.pitch.textContent = frame.pitch.toFixed(1) + ' °';
+                if (valueElements.roll) valueElements.roll.textContent = frame.roll.toFixed(1) + ' °';
+                if (valueElements.ground_speed) valueElements.ground_speed.textContent = frame.ground_speed.toFixed(2) + ' m/s';
+                if (valueElements.vertical_speed) valueElements.vertical_speed.textContent = frame.vertical_speed.toFixed(2) + ' m/s';
+                if (valueElements.distance) valueElements.distance.textContent = frame.distance.toFixed(1) + ' m';
+                if (valueElements.lat_lon) valueElements.lat_lon.textContent = frame.lat.toFixed(6) + ', ' + frame.lon.toFixed(6);
+
+                // ---------- 新增数据项 ----------
+                if (valueElements.vg_total) valueElements.vg_total.textContent = frame.vg_total.toFixed(2) + ' m/s';
+                if (valueElements.flight_path_angle) valueElements.flight_path_angle.textContent = frame.flight_path_angle.toFixed(2) + ' °';
+                
+                // 地速分量面板：三行显示
+                if (valueElements.velocity_components) {
+                    valueElements.velocity_components.innerHTML = 
+                        `E: ${frame.ve.toFixed(2)}<br>N: ${frame.vn.toFixed(2)}<br>U: ${frame.vu.toFixed(2)}`;
+                    valueElements.velocity_components.classList.add('multi-line');
+                }
+
+                // 姿态角速度面板：三行显示
+                if (valueElements.attitude_rates) {
+                    valueElements.attitude_rates.innerHTML = 
+                        `航向: ${frame.vheading.toFixed(2)}<br>俯仰: ${frame.vpitch.toFixed(2)}<br>滚转: ${frame.vroll.toFixed(2)}`;
+                    valueElements.attitude_rates.classList.add('multi-line');
+                }
+
+                // 飞行状态判断
+                if (valueElements.flight_status) {
+                    valueElements.flight_status.textContent = frame.flight_status;
+                }
             }
 
             // ========== 主渲染逻辑（完全未改动） ==========
@@ -812,7 +931,6 @@ if len(frames_data) > 0:
                 frameText.textContent = `第 ${currentFrame + 1} / ${totalFrames} 帧`;
                 frameSlider.value = currentFrame;
 
-                // 【新增】更新姿态仪表和数据面板
                 drawAttitudeIndicator(frame.pitch, frame.roll, frame.heading);
                 updateDataValues(frame);
             }
@@ -870,7 +988,6 @@ if len(frames_data) > 0:
                 renderer.setSize(container.clientWidth, container.clientHeight);
             });
 
-            // 初始化
             initDataPanel();
             setCameraView('free');
             updateFrame();
